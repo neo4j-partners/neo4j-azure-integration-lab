@@ -31,6 +31,7 @@ class DeploymentType(str, Enum):
     """Deployment platform type."""
 
     VM = "vm"
+    DATABRICKS_PEERING = "databricks-peering"
 
 
 class TestScenario(BaseModel):
@@ -68,6 +69,11 @@ class TestScenario(BaseModel):
     graph_data_science_license_key: str = Field("None", description="GDS license key")
     install_bloom: bool = Field(False, description="Install Bloom")
     bloom_license_key: str = Field("None", description="Bloom license key")
+
+    # Databricks peering fields (only used when deployment_type is databricks-peering)
+    source_scenario: Optional[str] = Field(None, description="Source Neo4j scenario to peer with")
+    databricks_workspace_name: str = Field("neo4j-dbx", description="Databricks workspace name")
+    databricks_vnet_cidr: str = Field("192.168.0.0/16", description="Databricks VNet CIDR")
 
     @field_validator("read_replica_count")
     @classmethod
@@ -191,6 +197,7 @@ class DeploymentState(BaseModel):
     status: Literal["pending", "deploying", "succeeded", "failed", "deleted"] = Field(
         "pending", description="Deployment status"
     )
+    subscription_scoped: bool = Field(False, description="Use subscription-scoped deployment")
 
 
 class ActiveDeployments(BaseModel):

@@ -114,6 +114,7 @@ mainTemplate.json
 *.generated.json
 infra/main.json
 infra/*.json
+infra/modules/*.json
 !infra/*.parameters.json.sample
 
 # ARM template parameter files with secrets

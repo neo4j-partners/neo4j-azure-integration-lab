@@ -20,6 +20,21 @@ uv run test_keycloak.py       # Acquire token and display claims
 
 The start command auto-imports the `neo4j` realm with a pre-configured client and roles. The admin console is available at http://localhost:8080 (admin/admin).
 
+### Against Azure Deployment
+
+To run against a Keycloak instance deployed to Azure via `keycloak-infra/`:
+
+```bash
+uv run test_keycloak.py --azure
+```
+
+This reads the Keycloak URL, client ID, and client secret from `keycloak-infra/.deployment.json` (created after a successful Azure deployment). You can override individual values:
+
+```bash
+uv run test_keycloak.py --azure --realm custom-realm
+uv run test_keycloak.py --server-url https://your-keycloak.azurecontainerapps.io --client-id neo4j-client --client-secret your-secret
+```
+
 ## Pre-configured Realm
 
 The `realm-export.json` creates:

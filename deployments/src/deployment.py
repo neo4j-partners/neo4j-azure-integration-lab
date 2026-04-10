@@ -55,7 +55,10 @@ class DeploymentEngine:
         self.base_template_dir = base_template_dir
 
         # Template files
-        self.template_file = base_template_dir / "main.bicep"
+        if deployment_type == "databricks-peering":
+            self.template_file = base_template_dir / "databricks-main.bicep"
+        else:
+            self.template_file = base_template_dir / "main.bicep"
         self.base_params_file = base_template_dir / "parameters.json"
         self.is_bicep = True
 
@@ -95,6 +98,10 @@ class DeploymentEngine:
             f"[cyan]Generating parameters for scenario: {scenario.name}[/cyan]"
         )
 
+        if scenario.deployment_type.value == "databricks-peering":
+            self.template_file = self.base_template_dir / "databricks-main.bicep"
+            return self._generate_databricks_parameters(scenario, region or self.settings.default_region)
+
         # Load base parameters or create default structure
         base_params = self._load_base_parameters()
 
@@ -117,6 +124,61 @@ class DeploymentEngine:
 
         console.print(f"[green]Parameters saved to: {param_file_path}[/green]")
         return param_file_path
+
+    def _generate_databricks_parameters(self, scenario: TestScenario, region: str) -> Path:
+        """Generate parameter file for the Databricks peering deployment."""
+        import json
+
+        # Load source scenario's saved deployment JSON
+        deployments_dir = Path(__file__).parent.parent.parent / ".deployments"
+        source_file = deployments_dir / f"{scenario.source_scenario}.json"
+        if not source_file.exists():
+            raise FileNotFoundError(
+                f"Source scenario deployment not found: {source_file}\n"
+                f"Deploy '{scenario.source_scenario}' first, then run this scenario."
+            )
+
+        with open(source_file) as f:
+            source = json.load(f)
+
+        vnet_id = source.get("network", {}).get("vnet_id", "")
+        nsg_id = source.get("network", {}).get("nsg_id", "")
+        neo4j_rg = source.get("resource_group", "")
+
+        if not vnet_id or not nsg_id or not neo4j_rg:
+            raise ValueError(
+                f"Source deployment '{scenario.source_scenario}' is missing network info. "
+                f"Re-deploy it to populate vnet_id and nsg_id."
+            )
+
+        nsg_name = nsg_id.split("/")[-1]
+        dbx_rg = f"{neo4j_rg}-dbx"
+
+        params = {
+            "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+            "contentVersion": "1.0.0.0",
+            "parameters": {
+                "location": {"value": region},
+                "neo4jResourceGroup": {"value": neo4j_rg},
+                "neo4jVnetId": {"value": vnet_id},
+                "neo4jNsgName": {"value": nsg_name},
+                "databricksResourceGroup": {"value": dbx_rg},
+                "databricksWorkspaceName": {"value": scenario.databricks_workspace_name},
+                "databricksVnetCidr": {"value": scenario.databricks_vnet_cidr},
+            },
+        }
+
+        timestamp = get_timestamp()
+        filename = f"params-{scenario.name}-{timestamp}.json"
+        file_path = PARAMS_DIR / filename
+        save_json(params, file_path)
+
+        console.print(f"[green]Databricks parameters saved to: {file_path}[/green]")
+        console.print(f"[dim]  Neo4j RG: {neo4j_rg}[/dim]")
+        console.print(f"[dim]  VNet ID: {vnet_id}[/dim]")
+        console.print(f"[dim]  NSG name: {nsg_name}[/dim]")
+        console.print(f"[dim]  Databricks RG: {dbx_rg}[/dim]")
+        return file_path
 
     def _load_base_parameters(self) -> dict[str, Any]:
         """

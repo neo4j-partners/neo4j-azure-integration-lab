@@ -176,6 +176,10 @@ azure-ee-template/
 ├── validate-bearer-token/      # Python bearer token validation
 │   └── validate_bearer.py      # Acquire token, connect to Neo4j
 ├── keycloak-test-client/       # Python Keycloak token test client
+├── databricks-docs/            # Private Databricks-to-Neo4j connectivity docs
+│   ├── p2p-architecture.md     # Architecture reference
+│   ├── p2p-access-guide.md     # Deployment and access guide
+│   └── p2p-setup-questions.md  # Customer pre-engagement questions
 └── .deployments/               # Saved deployment details (gitignored)
 ```
 
@@ -252,6 +256,26 @@ cd oauth-java
 ```
 
 The script reads deployment info, acquires a Keycloak token, and connects to Neo4j using the [Neo4j JDBC driver](https://github.com/neo4j/neo4j-jdbc) with `authScheme=bearer`. It verifies the connection and displays the OIDC-mapped roles.
+
+## Databricks Integration
+
+The `databricks-docs/` directory covers private connectivity between a Databricks workspace and a deployed Neo4j instance over Azure VNet peering. All traffic travels over the Microsoft network backbone with no public exposure for database ports or cluster nodes.
+
+| Document | Description |
+|----------|-------------|
+| [Architecture](databricks-docs/p2p-architecture.md) | How the private path is designed, what each component does, and what cannot be changed after deployment |
+| [Deployment and Access Guide](databricks-docs/p2p-access-guide.md) | Step-by-step guide to deploy, verify, and test connectivity from a Databricks notebook |
+| [Customer Setup Questions](databricks-docs/p2p-setup-questions.md) | Pre-engagement questions to confirm whether VNet injection and peering are feasible |
+
+The integration requires two scenarios deployed in sequence: `standalone-v2025` deploys Neo4j and saves the VNet and NSG resource IDs, and `peer-databricks-v2025` reads those IDs to deploy the Databricks workspace, VNet, NAT gateway, and peering connections.
+
+```bash
+cd deployments
+uv run neo4j-deploy deploy --scenario standalone-v2025
+uv run neo4j-deploy deploy --scenario peer-databricks-v2025
+```
+
+See [databricks-docs/p2p-access-guide.md](databricks-docs/p2p-access-guide.md) for the full walkthrough, including peering verification, NSG confirmation, and a connectivity test from a Databricks notebook.
 
 ## License
 

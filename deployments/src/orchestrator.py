@@ -50,6 +50,7 @@ class DeploymentOrchestrator:
         self,
         resource_group: str,
         parameter_file: Path,
+        is_subscription_scoped: bool = False,
     ) -> tuple[bool, Optional[str]]:
         """
         Validate ARM template before deployment.
@@ -57,6 +58,7 @@ class DeploymentOrchestrator:
         Args:
             resource_group: Resource group name
             parameter_file: Path to parameter file
+            is_subscription_scoped: If True, use subscription-scoped validation
 
         Returns:
             Tuple of (is_valid, error_message)
@@ -73,13 +75,26 @@ class DeploymentOrchestrator:
 
         # Run validation with --debug to get actual error messages
         # when Azure CLI bug hides them
-        command = (
-            f"az deployment group validate "
-            f"--resource-group {resource_group} "
-            f"--template-file {template_path} "
-            f"--parameters {params_path} "
-            f"--debug"
-        )
+        if is_subscription_scoped:
+            import json as _json
+            with open(params_path) as _f:
+                _p = _json.load(_f)
+            _location = _p.get("parameters", {}).get("location", {}).get("value", "eastus")
+            command = (
+                f"az deployment sub validate "
+                f"--location {_location} "
+                f"--template-file {template_path} "
+                f"--parameters {params_path} "
+                f"--debug"
+            )
+        else:
+            command = (
+                f"az deployment group validate "
+                f"--resource-group {resource_group} "
+                f"--template-file {template_path} "
+                f"--parameters {params_path} "
+                f"--debug"
+            )
 
         try:
             result = run_command(command, check=False)
@@ -180,12 +195,16 @@ class DeploymentOrchestrator:
             f"[cyan]Submitting deployment: {deployment_state.deployment_name}[/cyan]"
         )
 
+        # Detect subscription-scoped deployment (databricks-main.bicep)
+        is_sub_scoped = "databricks-main" in str(self.template_file)
+
         # Validate template before deployment (unless skipped)
         if not skip_validation:
             console.print("[dim]Validating template...[/dim]")
             is_valid, error_msg = self.validate_deployment(
                 deployment_state.resource_group_name,
-                parameter_file
+                parameter_file,
+                is_subscription_scoped=is_sub_scoped,
             )
 
             if not is_valid:
@@ -238,16 +257,33 @@ class DeploymentOrchestrator:
         # Note: Don't use @ symbol with local files - it causes Azure CLI errors
         # The @ symbol is only for inline JSON or URIs
         # Use --only-show-errors to suppress Azure CLI logging bugs
-        command = (
-            f"az deployment group create "
-            f"--resource-group {deployment_state.resource_group_name} "
-            f"--name {deployment_state.deployment_name} "
-            f"--template-file {template_path} "
-            f"--parameters {params_path} "
-            f"{wait_flag} "
-            f"--only-show-errors "
-            f"--output json"
-        )
+        if is_sub_scoped:
+            # Read location from params file for subscription-scoped deployment
+            import json as _json
+            with open(params_path) as _f:
+                _p = _json.load(_f)
+            _location = _p.get("parameters", {}).get("location", {}).get("value", "eastus")
+            command = (
+                f"az deployment sub create "
+                f"--location {_location} "
+                f"--name {deployment_state.deployment_name} "
+                f"--template-file {template_path} "
+                f"--parameters {params_path} "
+                f"{wait_flag} "
+                f"--only-show-errors "
+                f"--output json"
+            )
+        else:
+            command = (
+                f"az deployment group create "
+                f"--resource-group {deployment_state.resource_group_name} "
+                f"--name {deployment_state.deployment_name} "
+                f"--template-file {template_path} "
+                f"--parameters {params_path} "
+                f"{wait_flag} "
+                f"--only-show-errors "
+                f"--output json"
+            )
 
         try:
             # Debug: print the command
@@ -354,6 +390,7 @@ class DeploymentOrchestrator:
         self,
         resource_group: str,
         deployment_name: str,
+        is_subscription_scoped: bool = False,
     ) -> Optional[dict]:
         """
         Extract outputs from a completed Azure deployment.
@@ -361,6 +398,7 @@ class DeploymentOrchestrator:
         Args:
             resource_group: Resource group name
             deployment_name: Deployment name
+            is_subscription_scoped: If True, use subscription-scoped show command
 
         Returns:
             Dictionary of deployment outputs, or None if extraction failed
@@ -370,14 +408,25 @@ class DeploymentOrchestrator:
         )
 
         try:
+            # Auto-detect subscription scope from template path (same logic as submit_deployment)
+            _is_sub = is_subscription_scoped or "databricks-main" in str(self.template_file)
+
             # Query deployment outputs
-            command = (
-                f"az deployment group show "
-                f"--resource-group {resource_group} "
-                f"--name {deployment_name} "
-                f"--query properties.outputs "
-                f"--output json"
-            )
+            if _is_sub:
+                command = (
+                    f"az deployment sub show "
+                    f"--name {deployment_name} "
+                    f"--query properties.outputs "
+                    f"--output json"
+                )
+            else:
+                command = (
+                    f"az deployment group show "
+                    f"--resource-group {resource_group} "
+                    f"--name {deployment_name} "
+                    f"--query properties.outputs "
+                    f"--output json"
+                )
 
             result = run_command(command, check=False)
 
@@ -426,6 +475,22 @@ class DeploymentOrchestrator:
             ConnectionInfo object or None if parsing failed
         """
         try:
+            # Databricks peering deployments have different outputs — handle separately
+            if scenario.deployment_type.value == "databricks-peering":
+                workspace_url = outputs.get("databricksWorkspaceUrl", {}).get("value", "")
+                console.print(f"[green]✓ Databricks workspace URL: {workspace_url}[/green]")
+                conn_info = ConnectionInfo(
+                    deployment_id=deployment_state.deployment_id,
+                    scenario_name=deployment_state.scenario_name,
+                    resource_group=deployment_state.resource_group_name,
+                    neo4j_uri=workspace_url,
+                    browser_url=workspace_url,
+                    username="",
+                    password="",
+                    outputs=outputs,
+                )
+                return conn_info
+
             # Determine which browser URL key to use based on node count
             # VM templates use: Neo4jBrowserURL (standalone), Neo4jClusterBrowserURL (cluster)
             if scenario.node_count == 1:

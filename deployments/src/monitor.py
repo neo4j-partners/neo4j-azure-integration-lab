@@ -50,6 +50,7 @@ class DeploymentMonitor:
         self,
         resource_group: str,
         deployment_name: str,
+        is_subscription_scoped: bool = False,
     ) -> Optional[str]:
         """
         Get current deployment status from Azure.
@@ -57,18 +58,27 @@ class DeploymentMonitor:
         Args:
             resource_group: Resource group name
             deployment_name: Deployment name
+            is_subscription_scoped: If True, use subscription-scoped show command
 
         Returns:
             Provisioning state string (Running, Succeeded, Failed, etc.) or None
         """
         try:
-            command = (
-                f"az deployment group show "
-                f"--resource-group {resource_group} "
-                f"--name {deployment_name} "
-                f"--query properties.provisioningState "
-                f"--output tsv"
-            )
+            if is_subscription_scoped:
+                command = (
+                    f"az deployment sub show "
+                    f"--name {deployment_name} "
+                    f"--query properties.provisioningState "
+                    f"--output tsv"
+                )
+            else:
+                command = (
+                    f"az deployment group show "
+                    f"--resource-group {resource_group} "
+                    f"--name {deployment_name} "
+                    f"--query properties.provisioningState "
+                    f"--output tsv"
+                )
 
             result = run_command(command, check=False)
 
@@ -85,6 +95,7 @@ class DeploymentMonitor:
         self,
         resource_group: str,
         deployment_name: str,
+        is_subscription_scoped: bool = False,
     ) -> list[dict]:
         """
         Extract error details from failed deployment.
@@ -92,17 +103,25 @@ class DeploymentMonitor:
         Args:
             resource_group: Resource group name
             deployment_name: Deployment name
+            is_subscription_scoped: If True, use subscription-scoped operation list
 
         Returns:
             List of error dictionaries with operation details
         """
         try:
-            command = (
-                f"az deployment operation group list "
-                f"--resource-group {resource_group} "
-                f"--name {deployment_name} "
-                f"--output json"
-            )
+            if is_subscription_scoped:
+                command = (
+                    f"az deployment operation sub list "
+                    f"--name {deployment_name} "
+                    f"--output json"
+                )
+            else:
+                command = (
+                    f"az deployment operation group list "
+                    f"--resource-group {resource_group} "
+                    f"--name {deployment_name} "
+                    f"--output json"
+                )
 
             result = run_command(command, check=False)
 
@@ -135,6 +154,7 @@ class DeploymentMonitor:
         self,
         resource_group: str,
         deployment_name: str,
+        is_subscription_scoped: bool = False,
     ) -> None:
         """
         Display deployment errors in a formatted table.
@@ -142,8 +162,9 @@ class DeploymentMonitor:
         Args:
             resource_group: Resource group name
             deployment_name: Deployment name
+            is_subscription_scoped: If True, use subscription-scoped operation list
         """
-        errors = self.get_deployment_errors(resource_group, deployment_name)
+        errors = self.get_deployment_errors(resource_group, deployment_name, is_subscription_scoped)
 
         if not errors:
             console.print(
@@ -222,9 +243,11 @@ class DeploymentMonitor:
                             continue
 
                         # Get current status
+                        is_sub = getattr(state, 'subscription_scoped', False)
                         status = self.get_deployment_status(
                             state.resource_group_name,
-                            state.deployment_name
+                            state.deployment_name,
+                            is_subscription_scoped=is_sub,
                         )
 
                         if status in ["Succeeded", "Failed", "Canceled"]:
@@ -244,7 +267,8 @@ class DeploymentMonitor:
                                 )
                                 self.display_deployment_errors(
                                     state.resource_group_name,
-                                    state.deployment_name
+                                    state.deployment_name,
+                                    is_subscription_scoped=is_sub,
                                 )
                             else:
                                 console.print(
@@ -288,9 +312,11 @@ class DeploymentMonitor:
                         continue
 
                     # Get current status
+                    is_sub = getattr(state, 'subscription_scoped', False)
                     status = self.get_deployment_status(
                         state.resource_group_name,
-                        state.deployment_name
+                        state.deployment_name,
+                        is_subscription_scoped=is_sub,
                     )
 
                     # Show current status
@@ -320,7 +346,8 @@ class DeploymentMonitor:
                             )
                             self.display_deployment_errors(
                                 state.resource_group_name,
-                                state.deployment_name
+                                state.deployment_name,
+                                is_subscription_scoped=is_sub,
                             )
                         else:
                             console.print(
@@ -363,9 +390,11 @@ class DeploymentMonitor:
 
         for deployment_id, state in active_deployments.items():
             # Get current status
+            is_sub = getattr(state, 'subscription_scoped', False)
             status = self.get_deployment_status(
                 state.resource_group_name,
-                state.deployment_name
+                state.deployment_name,
+                is_subscription_scoped=is_sub,
             ) or "Unknown"
 
             # Calculate duration

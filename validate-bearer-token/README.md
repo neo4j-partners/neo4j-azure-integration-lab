@@ -55,7 +55,9 @@ With `--validate-token`, the script stops after step 3 and displays the token de
 
 ## Configuration File
 
-The script reads from `.deployments/{scenario}.json`, which is created by `neo4j-deploy` and contains:
+The script reads from `.deployments/{scenario}.json`, which is created by `neo4j-deploy` and contains connection and M2M authentication details. Both Entra ID and Keycloak providers are supported.
+
+### Entra ID
 
 ```json
 {
@@ -67,6 +69,7 @@ The script reads from `.deployments/{scenario}.json`, which is created by `neo4j
   },
   "m2m_auth": {
     "enabled": true,
+    "provider_type": "entra",
     "tenant_id": "...",
     "client_app_id": "...",
     "audience": "api://neo4j-m2m",
@@ -75,6 +78,51 @@ The script reads from `.deployments/{scenario}.json`, which is created by `neo4j
   }
 }
 ```
+
+### Keycloak
+
+When Neo4j is deployed with Keycloak as the OIDC provider (via `keycloak-infra/`), the deployment file includes Keycloak-specific fields. The client secret is stored in the deployment JSON, so you don't need to set `NEO4J_CLIENT_SECRET`.
+
+```json
+{
+  "scenario": "standalone-v2025",
+  "connection": {
+    "neo4j_uri": "bolt://hostname:7687",
+    "username": "neo4j",
+    "password": "..."
+  },
+  "m2m_auth": {
+    "enabled": true,
+    "provider_type": "keycloak",
+    "discovery_uri": "https://your-keycloak.azurecontainerapps.io/realms/neo4j/.well-known/openid-configuration",
+    "token_endpoint": "https://your-keycloak.azurecontainerapps.io/realms/neo4j/protocol/openid-connect/token",
+    "audience": "neo4j-client",
+    "client_id": "neo4j-client",
+    "client_secret": "...",
+    "role_mapping": "\"neo4j-admin\"=admin;\"neo4j-readwrite\"=editor;\"neo4j-readonly\"=reader",
+    "display_name": "Keycloak M2M"
+  }
+}
+```
+
+## Keycloak Usage
+
+If you deployed Keycloak to Azure via `keycloak-infra/` and Neo4j with Keycloak OIDC enabled, the deployment file is already configured. Run:
+
+```bash
+cd validate-bearer-token
+uv run validate_bearer.py --scenario standalone-v2025
+```
+
+This acquires a token from the Azure Keycloak instance, tests basic auth, and then tests bearer token auth against Neo4j. No environment variables needed — the client secret is read from the deployment JSON.
+
+To validate only the token (without connecting to Neo4j):
+
+```bash
+uv run validate_bearer.py --scenario standalone-v2025 --validate-token
+```
+
+You can also test against a local Keycloak started via `keycloak-test-client/` — just ensure the `.deployments/{scenario}.json` points to `http://localhost:8080` as the token endpoint.
 
 ## Troubleshooting
 

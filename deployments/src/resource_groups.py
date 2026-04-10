@@ -116,6 +116,11 @@ class ResourceGroupManager:
                     )
                 return True
             else:
+                if "ResourceGroupNotFound" in result.stderr and not self.resource_group_exists(name):
+                    console.print(
+                        f"[green]✓ Resource group already deleted: {name}[/green]"
+                    )
+                    return True
                 console.print(
                     f"[red]✗ Failed to delete resource group: {result.stderr}[/red]"
                 )

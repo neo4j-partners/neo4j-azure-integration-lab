@@ -34,34 +34,53 @@ def save_deployment_details(conn_info, deployment_state, settings=None) -> Path:
 
     DEPLOYMENTS_DIR.mkdir(exist_ok=True)
 
-    # Create deployment details
-    details = {
-        "scenario": conn_info.scenario_name,
-        "deployment_id": conn_info.deployment_id,
-        "resource_group": conn_info.resource_group,
-        "created_at": conn_info.created_at.isoformat(),
-        "connection": {
-            "neo4j_uri": conn_info.neo4j_uri,
-            "browser_url": conn_info.browser_url,
-            "username": conn_info.username,
-            "password": conn_info.password,
-        },
-        "ssh": {
-            "hostname": conn_info.ssh_hostname,
-            "username": conn_info.ssh_username,
-            "command": conn_info.ssh_command,
-        },
-        "configuration": {
-            "license_type": conn_info.license_type,
-            "node_count": conn_info.node_count,
-        },
-    }
+    outputs = conn_info.outputs or {}
 
-    if conn_info.bloom_url:
-        details["connection"]["bloom_url"] = conn_info.bloom_url
+    # Databricks peering deployments have different output shape
+    if outputs.get("databricksWorkspaceUrl"):
+        details = {
+            "scenario": conn_info.scenario_name,
+            "deployment_id": conn_info.deployment_id,
+            "resource_group": conn_info.resource_group,
+            "created_at": conn_info.created_at.isoformat(),
+            "databricks": {
+                "workspace_url": outputs.get("databricksWorkspaceUrl", {}).get("value", ""),
+                "vnet_id": outputs.get("databricksVnetId", {}).get("value", ""),
+            },
+        }
+    else:
+        details = {
+            "scenario": conn_info.scenario_name,
+            "deployment_id": conn_info.deployment_id,
+            "resource_group": conn_info.resource_group,
+            "created_at": conn_info.created_at.isoformat(),
+            "connection": {
+                "neo4j_uri": conn_info.neo4j_uri,
+                "browser_url": conn_info.browser_url,
+                "username": conn_info.username,
+                "password": conn_info.password,
+            },
+            "ssh": {
+                "hostname": conn_info.ssh_hostname,
+                "username": conn_info.ssh_username,
+                "command": conn_info.ssh_command,
+            },
+            "configuration": {
+                "license_type": conn_info.license_type,
+                "node_count": conn_info.node_count,
+            },
+            "network": {
+                "vnet_id": outputs.get("vnetId", {}).get("value", ""),
+                "nsg_id": outputs.get("nsgId", {}).get("value", ""),
+            },
+        }
 
-    # Add M2M authentication info if configured
-    if settings and settings.m2m and settings.m2m.enabled:
+    if not outputs.get("databricksWorkspaceUrl"):
+        if conn_info.bloom_url:
+            details["connection"]["bloom_url"] = conn_info.bloom_url
+
+    # Add M2M authentication info if configured (Neo4j deployments only)
+    if not outputs.get("databricksWorkspaceUrl") and settings and settings.m2m and settings.m2m.enabled:
         m2m = settings.m2m
         if m2m.provider_type == "keycloak":
             details["m2m_auth"] = {
@@ -87,7 +106,7 @@ def save_deployment_details(conn_info, deployment_state, settings=None) -> Path:
                 "scope": f"{m2m.audience}/.default",
                 "well_known_uri": f"https://login.microsoftonline.com/{m2m.tenant_id}/v2.0/.well-known/openid-configuration",
             }
-    else:
+    elif not outputs.get("databricksWorkspaceUrl"):
         details["m2m_auth"] = {"enabled": False}
 
     # Save with scenario name for easy identification
@@ -561,6 +580,7 @@ def deploy(
             continue
 
         # Create deployment state
+        is_sub_scoped = s.deployment_type.value == "databricks-peering"
         state = DeploymentState(
             deployment_id=deployment_id,
             resource_group_name=rg_name,
@@ -570,6 +590,7 @@ def deploy(
             parameter_file_path=str(param_file),
             cleanup_mode=cleanup,
             status="pending",
+            subscription_scoped=is_sub_scoped,
         )
 
         # Save initial state
