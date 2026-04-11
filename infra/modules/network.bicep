@@ -143,6 +143,13 @@ resource vnet 'Microsoft.Network/virtualNetworks@2025-03-01' = {
           }
         }
       }
+      {
+        name: 'pls-subnet'
+        properties: {
+          addressPrefix: '10.0.2.0/28'
+          privateLinkServiceNetworkPolicies: 'Disabled'
+        }
+      }
     ]
   }
 }
@@ -150,3 +157,4 @@ resource vnet 'Microsoft.Network/virtualNetworks@2025-03-01' = {
 output vnetId string = vnet.id
 output subnetId string = vnet.properties.subnets[0].id
 output nsgId string = networkSG.id
+output plsSubnetId string = vnet.properties.subnets[1].id

@@ -2,6 +2,8 @@ param location string
 param resourceSuffix string
 param loadBalancerCondition bool
 param subnetId string
+param plsSubnetId string
+param plsName string = 'pls-neo4j'
 
 var loadBalancerName = 'lb-neo4j-${location}-${resourceSuffix}'
 
@@ -148,5 +150,35 @@ resource loadBalancer 'Microsoft.Network/loadBalancers@2025-03-01' = if (loadBal
   }
 }
 
+resource privateLinkService 'Microsoft.Network/privateLinkServices@2025-03-01' = if (loadBalancerCondition) {
+  name: plsName
+  location: location
+  properties: {
+    loadBalancerFrontendIpConfigurations: [
+      {
+        id: loadBalancer!.properties.frontendIPConfigurations[0].id
+      }
+    ]
+    ipConfigurations: [
+      {
+        name: 'pls-nat-ip'
+        properties: {
+          subnet: { id: plsSubnetId }
+          privateIPAllocationMethod: 'Dynamic'
+          primary: true
+        }
+      }
+    ]
+    visibility: {
+      subscriptions: ['*']
+    }
+    autoApproval: {
+      subscriptions: []
+    }
+    enableProxyProtocol: false
+  }
+}
+
 output loadBalancerBackendAddressPools array = loadBalancerCondition ? loadBalancer!.properties.backendAddressPools : []
 output privateIpAddress string = loadBalancerCondition ? loadBalancer!.properties.frontendIPConfigurations[0].properties.privateIPAddress : ''
+output privateLinkServiceId string = loadBalancerCondition ? privateLinkService!.id : ''

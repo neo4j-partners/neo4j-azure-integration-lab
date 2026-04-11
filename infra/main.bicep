@@ -35,6 +35,9 @@ param location string = resourceGroup().location
 @description('OIDC configuration for M2M authentication (optional). Pass "none" to disable.')
 param oidcConfig string = 'none'
 
+@description('Fixed name for the Private Link Service. Stable across redeploys of the same resource group.')
+param plsName string = 'pls-neo4j'
+
 var deploymentUniqueId = uniqueString(resourceGroup().id, deployment().name)
 var resourceSuffix = deploymentUniqueId
 
@@ -63,6 +66,8 @@ module loadbalancer 'modules/loadbalancer.bicep' = {
     resourceSuffix: resourceSuffix
     loadBalancerCondition: loadBalancerCondition
     subnetId: network.outputs.subnetId
+    plsSubnetId: network.outputs.plsSubnetId
+    plsName: plsName
   }
 }
 
@@ -113,6 +118,7 @@ output nsgId string = network.outputs.nsgId
 output identityId string = identity.outputs.identityId
 output loadBalancerBackendAddressPools array = loadbalancer.outputs.loadBalancerBackendAddressPools
 output lbPrivateIpAddress string = loadBalancerCondition ? loadbalancer.outputs.privateIpAddress : ''
+output privateLinkServiceId string = loadbalancer.outputs.privateLinkServiceId
 output vmScaleSetsId string = vmss.outputs.vmScaleSetsId
 output vmScaleSetsName string = vmss.outputs.vmScaleSetsName
 

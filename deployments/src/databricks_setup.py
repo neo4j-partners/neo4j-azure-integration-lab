@@ -1,5 +1,5 @@
 """
-Shared Databricks setup: secrets scope creation and notebook/script upload.
+Shared Databricks setup: secrets scope creation, notebook/script upload, and NCC setup.
 
 Used by both the Ansible CLI (ansible_deploy.py) and the Bicep CLI (bicep_deploy.py).
 Each CLI handles its own authentication and reads the deployment JSON — this module
@@ -7,6 +7,9 @@ only handles the Databricks API calls that are identical between the two paths.
 """
 
 import base64
+import json as _json
+import subprocess
+import time
 from pathlib import Path
 
 from rich.console import Console
@@ -118,3 +121,146 @@ def run_databricks_setup(
     probe_encoded = base64.b64encode(_TCP_PROBE_SCRIPT.encode()).decode()
     client.dbfs.put(path=DBFS_PROBE_PATH, contents=probe_encoded, overwrite=True)
     console.print("[green]✓ TCP probe script uploaded[/green]")
+
+
+# ---------------------------------------------------------------------------
+# NCC (Network Connectivity Configuration) setup — account-scoped
+# ---------------------------------------------------------------------------
+
+def _approve_pending_connection(
+    *,
+    resource_group: str,
+    pls_name: str,
+    timeout_seconds: int = 300,
+) -> None:
+    """
+    Poll the Private Link Service for a Pending endpoint connection, then approve it.
+
+    Databricks provisions the private endpoint asynchronously after the PE rule is
+    created — this function waits up to timeout_seconds for the Pending state to appear
+    and then approves it via the Azure CLI session that is already authenticated.
+
+    If a connection is already Approved (e.g. setup-ncc is re-run after a successful
+    prior run), this function returns immediately without re-polling.
+    """
+    # Short-circuit: if a connection is already approved, nothing to do.
+    check = subprocess.run(
+        [
+            "az", "network", "private-link-service", "show",
+            "--resource-group", resource_group,
+            "--name", pls_name,
+            "--query",
+            "privateEndpointConnections[?privateLinkServiceConnectionState.status=='Approved'].name",
+            "--output", "json",
+        ],
+        capture_output=True, text=True, check=True,
+    )
+    already_approved: list[str] = _json.loads(check.stdout)
+    if already_approved:
+        console.print(f"[dim]PE connection already approved: {already_approved[0]}[/dim]")
+        return
+
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        result = subprocess.run(
+            [
+                "az", "network", "private-link-service", "show",
+                "--resource-group", resource_group,
+                "--name", pls_name,
+                "--query",
+                "privateEndpointConnections[?privateLinkServiceConnectionState.status=='Pending'].name",
+                "--output", "json",
+            ],
+            capture_output=True, text=True, check=True,
+        )
+        pending: list[str] = _json.loads(result.stdout)
+        if pending:
+            conn_name = pending[0]
+            subprocess.run(
+                [
+                    "az", "network", "private-link-service", "connection", "update",
+                    "--resource-group", resource_group,
+                    "--service-name", pls_name,
+                    "--name", conn_name,
+                    "--connection-status", "Approved",
+                ],
+                check=True,
+            )
+            console.print(f"[green]✓ Approved PE connection: {conn_name}[/green]")
+            return
+        console.print("[dim]  Waiting for pending connection...[/dim]")
+        time.sleep(15)
+    raise TimeoutError(
+        f"No pending PE connection appeared on '{pls_name}' within {timeout_seconds}s. "
+        "Check the Private Link Service in the Azure portal and approve manually if needed."
+    )
+
+
+def setup_ncc(
+    *,
+    pls_resource_id: str,
+    workspace_id: int,
+    workspace_region: str,
+    resource_group: str,
+    pls_name: str,
+    domain_names: list[str],
+    token: str,
+    account_host: str = "https://accounts.azuredatabricks.net",
+) -> None:
+    """
+    Create or reuse a Databricks NCC, attach it to the workspace, create a PE rule
+    pointing at the Private Link Service, and approve the resulting endpoint connection.
+
+    Uses the same AAD token as the workspace client — no additional credentials needed.
+    group_id is intentionally omitted: per Databricks API docs it is "not used by
+    customer-managed private endpoint services".
+    domain_names must contain the hostname(s) the Neo4j driver will use to connect.
+    """
+    from databricks.sdk import AccountClient
+
+    account_client = AccountClient(host=account_host, token=token)
+
+    # --- Create or reuse NCC ---
+    nccs = list(account_client.network_connectivity.list_network_connectivity_configs())
+    ncc = next((n for n in nccs if n.name == "neo4j-ncc"), None)
+    if ncc is None:
+        ncc = account_client.network_connectivity.create_network_connectivity_config(
+            name="neo4j-ncc",
+            region=workspace_region,
+        )
+        console.print(f"[green]✓ Created NCC: neo4j-ncc (region: {workspace_region})[/green]")
+    else:
+        console.print(f"[dim]Reusing existing NCC: neo4j-ncc[/dim]")
+
+    # --- Attach NCC to workspace ---
+    account_client.workspaces.update(
+        workspace_id=workspace_id,
+        network_connectivity_config_id=ncc.network_connectivity_config_id,
+    )
+    console.print("[green]✓ NCC attached to workspace[/green]")
+
+    # --- Create PE rule (idempotent) ---
+    # group_id omitted: "not used by customer-managed private endpoint services"
+    # domain_names required: hostname(s) driver uses; Databricks creates DNS routing internally
+    existing_rules = list(account_client.network_connectivity.list_private_endpoint_rules(
+        network_connectivity_config_id=ncc.network_connectivity_config_id,
+    ))
+    pe_rule = next((r for r in existing_rules if r.resource_id == pls_resource_id), None)
+    if pe_rule is None:
+        account_client.network_connectivity.create_private_endpoint_rule(
+            network_connectivity_config_id=ncc.network_connectivity_config_id,
+            resource_id=pls_resource_id,
+            domain_names=domain_names,
+        )
+        console.print(
+            f"[green]✓ PE rule created[/green] [dim](domain_names={domain_names})[/dim]\n"
+            "[dim]  Databricks is provisioning the private endpoint — this takes a few minutes...[/dim]"
+        )
+    else:
+        connection_state = getattr(pe_rule, "connection_state", "unknown")
+        console.print(
+            f"[dim]PE rule already exists (connection_state: {connection_state}), continuing...[/dim]"
+        )
+
+    # --- Poll and approve ---
+    _approve_pending_connection(resource_group=resource_group, pls_name=pls_name)

@@ -1269,6 +1269,168 @@ def setup_databricks(
     )
 
 
+@app.command("setup-ncc")
+def setup_ncc_cmd(
+    scenario: Annotated[
+        str,
+        typer.Option("--scenario", "-s", help="Scenario name (must have a complete deployment JSON)"),
+    ],
+    domain_name: Annotated[
+        str,
+        typer.Option(
+            "--domain-name",
+            help="Hostname to use in the NCC PE rule domain_names list. "
+                 "The serverless Neo4j driver must connect using this hostname.",
+        ),
+    ] = "neo4j.private",
+    pls_name: Annotated[
+        str,
+        typer.Option("--pls-name", help="Private Link Service resource name (default: pls-neo4j)"),
+    ] = "pls-neo4j",
+) -> None:
+    """
+    Create a Databricks NCC, attach it to the workspace, and establish a private endpoint
+    to the Neo4j Private Link Service for serverless compute connectivity.
+
+    Reads .deployments/{scenario}-{engine}.json and:
+    - Creates or reuses a Databricks NCC named 'neo4j-ncc' in the workspace region
+    - Attaches the NCC to the workspace
+    - Creates a PE rule with domain_names=[--domain-name] pointing at the PLS
+    - Polls for the Pending endpoint connection and approves it via Azure CLI
+
+    Auth: uses the current 'az login' session — no extra credentials required.
+    The same AAD token works for both the Databricks Account API and PLS approval.
+
+    After setup-ncc completes, use 'bolt://<domain-name>:7687' in serverless notebooks.
+    """
+    import subprocess as _sp
+
+    from rich.panel import Panel
+    from rich.table import Table
+
+    details_file = find_deployment_file(scenario, DEPLOYMENTS_DIR)
+    if not details_file:
+        console.print(f"[red]No deployment found for scenario: {scenario}[/red]")
+        console.print(f"[dim]Run: uv run bicep-deploy deploy --scenario {scenario}[/dim]")
+        raise typer.Exit(1)
+
+    with open(details_file) as f:
+        details = json.load(f)
+
+    if details.get("state") != "complete":
+        console.print("[red]Deployment is not in a complete state.[/red]")
+        raise typer.Exit(1)
+
+    neo4j_rg: str = details.get("neo4j_resource_group", "")
+    databricks_rg: str = details.get("databricks_resource_group", "")
+
+    if not neo4j_rg or not databricks_rg:
+        console.print("[red]Missing neo4j_resource_group or databricks_resource_group in deployment JSON.[/red]")
+        raise typer.Exit(1)
+
+    # --- Resolve subscription ID to construct the deterministic PLS ARM resource ID ---
+    try:
+        sub_result = _sp.run(
+            ["az", "account", "show", "--query", "id", "--output", "tsv"],
+            capture_output=True, text=True, check=True,
+        )
+        subscription_id = sub_result.stdout.strip()
+    except _sp.CalledProcessError as e:
+        console.print(f"[red]Failed to get Azure subscription ID: {e.stderr}[/red]")
+        raise typer.Exit(1)
+
+    pls_resource_id = (
+        f"/subscriptions/{subscription_id}"
+        f"/resourceGroups/{neo4j_rg}"
+        f"/providers/Microsoft.Network/privateLinkServices/{pls_name}"
+    )
+
+    # --- Resolve workspace region from the Databricks resource group location ---
+    try:
+        region_result = _sp.run(
+            ["az", "group", "show", "--name", databricks_rg, "--query", "location", "--output", "tsv"],
+            capture_output=True, text=True, check=True,
+        )
+        workspace_region = region_result.stdout.strip()
+    except _sp.CalledProcessError as e:
+        console.print(f"[red]Failed to get workspace region from resource group '{databricks_rg}': {e.stderr}[/red]")
+        raise typer.Exit(1)
+
+    # --- Resolve numeric workspace ID ---
+    try:
+        ws_id_result = _sp.run(
+            [
+                "az", "databricks", "workspace", "list",
+                "--resource-group", databricks_rg,
+                "--query", "[0].workspaceId",
+                "--output", "tsv",
+            ],
+            capture_output=True, text=True, check=True,
+        )
+        workspace_id = int(ws_id_result.stdout.strip())
+    except (_sp.CalledProcessError, ValueError) as e:
+        console.print(f"[red]Failed to get Databricks workspace ID from '{databricks_rg}': {e}[/red]")
+        raise typer.Exit(1)
+
+    # --- Get AAD token for Databricks Account API ---
+    # 2ff814a6-3304-4ab8-85cb-cd0e6f879c1d is the fixed, globally-registered Azure AD
+    # application ID for the Databricks platform service — identical in every tenant.
+    try:
+        token_result = _sp.run(
+            [
+                "az", "account", "get-access-token",
+                "--resource", "2ff814a6-3304-4ab8-85cb-cd0e6f879c1d",
+                "--query", "accessToken",
+                "--output", "tsv",
+            ],
+            capture_output=True, text=True, check=True,
+        )
+        token = token_result.stdout.strip()
+    except _sp.CalledProcessError as e:
+        console.print(f"[red]Failed to get Databricks AAD token: {e.stderr}[/red]")
+        raise typer.Exit(1)
+
+    # --- Run NCC setup ---
+    console.print(f"\n[bold]NCC Setup[/bold]")
+    console.print(f"  PLS resource ID: [dim]{pls_resource_id}[/dim]")
+    console.print(f"  Workspace region: [dim]{workspace_region}[/dim]")
+    console.print(f"  Workspace ID:     [dim]{workspace_id}[/dim]")
+    console.print(f"  domain_names:     [dim]{[domain_name]}[/dim]")
+
+    try:
+        from src.databricks_setup import setup_ncc
+        setup_ncc(
+            pls_resource_id=pls_resource_id,
+            workspace_id=workspace_id,
+            workspace_region=workspace_region,
+            resource_group=neo4j_rg,
+            pls_name=pls_name,
+            domain_names=[domain_name],
+            token=token,
+        )
+    except TimeoutError as e:
+        console.print(f"[yellow]⚠ {e}[/yellow]")
+        raise typer.Exit(1)
+    except Exception as e:
+        console.print(f"[red]NCC setup failed: {e}[/red]")
+        raise typer.Exit(1)
+
+    bolt_uri = f"bolt://{domain_name}:7687"
+    table = Table(show_header=False, box=None, padding=(0, 2))
+    table.add_column("Label", style="cyan")
+    table.add_column("Value", style="white")
+    table.add_row("NCC name", "neo4j-ncc")
+    table.add_row("PLS name", pls_name)
+    table.add_row("domain_name", domain_name)
+    table.add_row("Serverless bolt URI", bolt_uri)
+    table.add_row("", "")
+    table.add_row("Next step", f"Connect from a serverless notebook with:")
+    table.add_row("", f'GraphDatabase.driver("{bolt_uri}", auth=("neo4j", "<password>"))')
+    console.print(
+        Panel(table, title="[bold green]NCC Setup Complete[/bold green]", border_style="green")
+    )
+
+
 @app.command()
 def report(
     deployment_id: Annotated[
