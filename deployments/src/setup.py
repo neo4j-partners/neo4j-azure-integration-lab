@@ -152,9 +152,9 @@ class SetupWizard:
 
         console.print("\n[bold green]✓ Setup complete![/bold green]")
         console.print("You can now run:")
-        console.print("  [cyan]uv run neo4j-deploy validate[/cyan]     - Validate templates")
-        console.print("  [cyan]uv run neo4j-deploy deploy --all[/cyan] - Deploy all scenarios")
-        console.print("  [cyan]uv run neo4j-deploy status[/cyan]       - Check deployment status")
+        console.print("  [cyan]uv run bicep-deploy validate[/cyan]     - Validate templates")
+        console.print("  [cyan]uv run bicep-deploy deploy --all[/cyan] - Deploy all scenarios")
+        console.print("  [cyan]uv run bicep-deploy status[/cyan]       - Check deployment status")
 
         return True
 
@@ -175,7 +175,7 @@ All configuration will be stored in [cyan].arm-testing/config/[/cyan]
 Working files (logs, results, state) will be in [cyan].arm-testing/[/cyan]
 The [cyan].arm-testing/[/cyan] directory is already git-ignored.
 
-You can run this setup again anytime with: [cyan]uv run neo4j-deploy setup[/cyan]
+You can run this setup again anytime with: [cyan]uv run bicep-deploy setup[/cyan]
         """
 
         console.print(Panel(welcome_text, title="Setup Wizard", border_style="blue"))
@@ -334,6 +334,16 @@ You can run this setup again anytime with: [cyan]uv run neo4j-deploy setup[/cyan
             TestScenario(
                 name="cluster-v2025",
                 deployment_type=DeploymentType.VM,
+                node_count=3,
+                graph_database_version="2025",
+                vm_size="Standard_D2s_v5",
+                disk_size=32,
+                license_type="Evaluation",
+            ),
+            TestScenario(
+                name="peer-databricks-v2025",
+                deployment_type=DeploymentType.DATABRICKS_PEERING,
+                source_scenario="cluster-v2025",
                 node_count=3,
                 graph_database_version="2025",
                 vm_size="Standard_D2s_v5",

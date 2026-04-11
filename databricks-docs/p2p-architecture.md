@@ -2,7 +2,7 @@
 
 ## Overview
 
-This architecture establishes a private network path between a Databricks analytics workspace and a Neo4j graph database on Azure. Databricks cluster nodes reach Neo4j through a bidirectional VNet peering connection that routes all traffic between the two systems directly over the Microsoft backbone. The Neo4j database ports accept inbound connections from the Databricks address space only. Cluster nodes carry no public IP addresses. Every component spans two customer-owned resource groups and is orchestrated through a single subscription-scoped deployment.
+This architecture establishes a private network path between a Databricks analytics workspace and a three-node Neo4j Enterprise Edition cluster on Azure. Databricks cluster nodes reach Neo4j through a bidirectional VNet peering connection that routes all traffic between the two systems directly over the Microsoft backbone. The Neo4j database ports accept inbound connections from the Databricks address space only. Cluster nodes carry no public IP addresses. Every component spans two customer-owned resource groups and is orchestrated through a single subscription-scoped deployment.
 
 The design centers on VNet injection: placing the Databricks compute plane into a customer-managed Virtual Network rather than the Microsoft-managed default. That single decision is what makes standard Azure VNet peering possible between the two networks. The peering creates the private route; an NSG update on the Neo4j side defines exactly which ports are accessible across it; and a NAT gateway gives cluster nodes the outbound path they need to reach the Databricks control plane.
 
@@ -12,9 +12,13 @@ The design centers on VNet injection: placing the Databricks compute plane into 
 - A NAT gateway (Standard SKU, static public IP) attached to both subnets, providing mandatory outbound internet access for the Databricks control plane
 - A Databricks workspace (Standard SKU) deployed with VNet injection into the customer-managed VNet, with Secure Cluster Connectivity enabled so cluster nodes carry no public IP addresses
 - Bidirectional VNet peering connecting the Neo4j VNet (10.0.0.0/8) and the Databricks VNet (192.168.0.0/16) across two resource groups in the same subscription and region
+- A three-node Neo4j Enterprise Edition cluster deployed as a VM Scale Set with cluster discovery enabled
+- An internal Standard SKU load balancer with a private frontend IP allocated from the Neo4j subnet, fronting the three-node cluster with no public IP attached
 - An NSG update on the Neo4j side that replaces the Internet-open inbound rules for ports 7473, 7474, 7687, and 7688 with rules scoped to the Databricks CIDR, plus a deny-all rule from that CIDR at priority 200
 
 The result is a Databricks cluster that can open a Neo4j Bolt session over a private IP address with all traffic traveling on the Microsoft network backbone.
+
+Two deployment tools in this repository produce this architecture: Bicep templates under `infra/` and Ansible playbooks under `playbooks/`. They are equivalent; pick whichever fits your operational preference. See the [Deployment](#deployment) section at the bottom of this document for the file layout of each path.
 
 ---
 
@@ -36,9 +40,11 @@ Azure Subscription
 ├── Resource Group: neo4j-rg
 │   ├── VNet  (e.g. 10.0.0.0/8)
 │   │   └── Subnet  (e.g. 10.0.0.0/16)
-│   │       └── Neo4j VMSS
+│   │       ├── Internal Load Balancer  (Standard SKU, private frontend IP, no public IP)
+│   │       └── Neo4j VMSS  (3 nodes: vm0, vm1, vm2)
 │   └── NSG  (attached to Neo4j subnet)
 │       ├── Allow  7687, 7473, 7474, 7688  from Databricks CIDR  (priority 101-106)
+│       ├── Allow  *                        from AzureLoadBalancer  (priority 110)
 │       ├── Deny   all                      from Databricks CIDR  (priority 200)
 │       ├── Allow  22                       from Internet
 │       └── Allow  6000, 7000              from VirtualNetwork
@@ -88,7 +94,7 @@ Private connectivity between Databricks and Neo4j is a day-zero decision. The VN
 
 The Databricks VNet (192.168.0.0/16) contains two subnets with fixed roles. The host subnet (192.168.0.0/26) receives the Databricks driver nodes. The container subnet (192.168.64.0/26) receives the worker nodes. Both must be at least /26, and no other Azure resource may share either subnet. Azure enforces this through subnet delegation: once a subnet is delegated to `Microsoft.Databricks/workspaces`, only Databricks resources may land in it.
 
-The delegation also means that Databricks manages the NSG rules on both subnets automatically. The service adds and modifies rules through the delegation mechanism to maintain cluster communication. However, Azure requires that an NSG resource be attached to each subnet at the time the workspace is created, even though the workspace will subsequently manage its own rules on those NSGs. Deploying the workspace without attached NSGs produces a `SubnetMissingNSG` error. The Bicep template creates two empty NSGs, attaches them, and leaves their rule management to the Databricks service thereafter.
+The delegation also means that Databricks manages the NSG rules on both subnets automatically. The service adds and modifies rules through the delegation mechanism to maintain cluster communication. However, Azure requires that an NSG resource be attached to each subnet at the time the workspace is created, even though the workspace will subsequently manage its own rules on those NSGs. Deploying the workspace without attached NSGs produces a `SubnetMissingNSG` error. The deployment creates two empty NSGs, attaches them, and leaves their rule management to the Databricks service thereafter.
 
 The VNet address space (192.168.0.0/16) must not overlap with the Neo4j VNet (10.0.0.0/8). These ranges are non-overlapping. VNet peering fails if the address spaces intersect, and there is no way to change a VNet's address space without deleting and recreating it along with all dependent resources.
 
@@ -112,7 +118,7 @@ A single peering connection covers only one direction. A peering from the Databr
 
 Because this deployment uses VNet injection, both VNets are customer-owned. The peering uses standard `Microsoft.Network/virtualNetworks/virtualNetworkPeerings` resources on each side. The `Microsoft.Databricks/workspaces/virtualNetworkPeerings` sub-resource is for the managed (non-injected) case where the workspace object proxies the peering into the Microsoft-managed VNet; it does not apply here.
 
-The peering connections span two resource groups within the same subscription and region. The Bicep orchestrator template runs at subscription scope so it can write into both resource groups in a single deployment. After both connections reach Connected, the Neo4j VNet's `VirtualNetwork` source tag in existing NSG rules also covers the peered Databricks address space (192.168.0.0/16). The cluster inter-node ports (6000 and 7000) therefore do not require separate rule changes; they inherit coverage through the expanded VirtualNetwork tag.
+The peering connections span two resource groups within the same subscription and region. The deployment runs at subscription scope so it can write into both resource groups in a single coordinated run. After both connections reach Connected, the Neo4j VNet's `VirtualNetwork` source tag in existing NSG rules also covers the peered Databricks address space (192.168.0.0/16). The cluster inter-node ports (6000 and 7000) therefore do not require separate rule changes; they inherit coverage through the expanded VirtualNetwork tag.
 
 ### NSG Update on the Neo4j Side
 
@@ -124,15 +130,29 @@ SSH (port 22) remains open to the Internet source tag so that administrative acc
 
 After this NSG update, the browser UI at port 7474 and the Bolt endpoint at port 7687 are no longer reachable from the public internet. Access from a local workstation requires an SSH tunnel through the Neo4j VM.
 
+### Inbound Allowlist Scope
+
+The allow rules on ports 7473, 7474, 7687, and 7688 match on `192.168.0.0/16`, the Databricks VNet CIDR. This is a private address range, and the NSG evaluates it against the private source addresses of Databricks cluster nodes. VNet peering is what makes those private addresses visible at the Neo4j subnet boundary: without peering, a packet from a cluster node arrives at the Neo4j NSG carrying the NAT gateway's public source IP, and the CIDR match fails.
+
+Several properties follow from using a private CIDR as the source.
+
+**The allowlist is a single entry per port, stable for the life of the workspace.** Each rule names the Databricks VNet address space chosen at deployment time. That CIDR is fixed when the VNet is created and stays constant until the VNet and workspace are recreated, so the allowlist is set once and holds as clusters scale up, scale down, restart, or recycle nodes.
+
+**Databricks-published public IP ranges stay out of the configuration.** Cluster nodes run with Secure Cluster Connectivity, so every node's traffic originates from a private IP inside 192.168.0.0/26 (host subnet) or 192.168.64.0/26 (container subnet), both of which fall within 192.168.0.0/16. The regional Databricks control-plane IP ranges apply to the SCC relay tunnel, which flows from the control plane to cluster nodes and terminates inside the Databricks-managed VNet. Those ranges appear only as source addresses on the SCC tunnel, never at the Neo4j NSG.
+
+**The NSG governs inbound traffic only.** The Neo4j VMSS originates no connections to Databricks. The Bolt driver in a Databricks notebook is the client; Neo4j is the server. All traffic between the two systems arrives at the Neo4j subnet as inbound, so the four allow rules plus the deny-all at priority 200 fully describe the security boundary between Databricks and Neo4j.
+
+**The Databricks side needs no matching configuration.** The Databricks-managed NSGs on the host and container subnets are delegated to `Microsoft.Databricks/workspaces`, and the default rule set managed by the service permits outbound traffic across the peering. Once both peering connections reach Connected, the effective routes on the Databricks subnets include the Neo4j VNet range, and the Bolt client in a notebook reaches the Neo4j private IP directly with no additional Databricks-side rules, routes, or allowlists.
+
 ---
 
 ## The Private Path in Practice
 
-Once both peering connections show Connected and the NSG update is in place, a Databricks notebook running on any cluster in the workspace can open a Neo4j driver session using the Neo4j VMSS's private IP address. The driver targets `bolt://<neo4j-private-ip>:7687`. The packet leaves the cluster node's container subnet, traverses the VNet peering, arrives at the Neo4j subnet, passes the NSG inbound check (the source address falls within the Databricks CIDR, which the allow rule for port 7687 covers), and reaches the Neo4j process on the VM.
+Once both peering connections show Connected and the NSG update is in place, a Databricks notebook running on any cluster in the workspace can open a Neo4j driver session using the internal load balancer's private frontend IP. The driver targets `neo4j://<lb-private-ip>:7687`. The packet leaves the cluster node's container subnet, traverses the VNet peering, arrives at the Neo4j subnet, passes the NSG inbound check (the source address falls within the Databricks CIDR, which the allow rule for port 7687 covers), reaches the LB frontend, and is forwarded by the LB backend rule to one of the three Neo4j cluster nodes.
 
 The full round-trip stays on the Microsoft network backbone. The NSG at the Neo4j subnet boundary is the only access control gate between the cluster and the database.
 
-`driver.verify_connectivity()` succeeds over this path, and Cypher queries execute against the graph from the notebook without any traffic leaving the Microsoft network. The Neo4j private IP is the internal address assigned to the VMSS instance within its subnet; it is visible through `az vmss nic list` against the Neo4j resource group.
+`driver.verify_connectivity()` succeeds over this path, and Cypher queries execute against the graph from the notebook without any traffic leaving the Microsoft network. The LB private frontend IP is retrievable via `az network lb frontend-ip list` against the Neo4j resource group.
 
 ---
 
@@ -154,100 +174,54 @@ The full round-trip stays on the Microsoft network backbone. The NSG at the Neo4
 
 **Secure Cluster Connectivity (SCC).** A Databricks workspace configuration (also called No Public IP or NPIP) in which cluster VMs are assigned no public IP addresses. All control-plane communication flows through a Databricks relay service over a secure tunnel that the cluster node initiates outbound. Inbound connections from the Databricks control plane never traverse a public network path. SCC requires a NAT gateway or equivalent outbound path for the cluster nodes to reach the Databricks relay endpoints.
 
-**Bolt Protocol.** The binary wire protocol used by Neo4j drivers to communicate with Neo4j instances. Bolt runs over TCP on port 7687 by default. The `bolt://` URI scheme establishes a direct connection to a single Neo4j instance; the `neo4j://` URI scheme requests a routing table from the server and distributes reads and writes across cluster members. For a standalone single-node deployment, `bolt://` is appropriate. For a multi-node cluster behind a load balancer, `neo4j://` pointing at the load balancer's private frontend IP lets the driver discover and use all cluster members.
-
-**Bicep Subscription Scope.** Azure Bicep templates normally deploy resources into a single resource group. Setting `targetScope = 'subscription'` at the top of a Bicep file allows the template to create resource groups and deploy resources across multiple resource groups in a single operation. The Databricks orchestrator template runs at subscription scope so it can create the Databricks resource group, deploy all Databricks infrastructure into it, and write both peering connections (one into the Databricks VNet and one into the Neo4j VNet) in a single coordinated deployment.
+**Bolt Protocol.** The binary wire protocol used by Neo4j drivers to communicate with Neo4j instances. Bolt runs over TCP on port 7687 by default. The `bolt://` URI scheme establishes a direct connection to a single Neo4j instance; the `neo4j://` URI scheme requests a routing table from the server and distributes reads and writes across cluster members. For a three-node cluster behind an internal load balancer, use `neo4j://` pointed at the LB's private frontend IP. The driver sends an initial routing request through the LB, receives a routing table listing all three cluster members, and then distributes reads and writes directly to those members. Using `bolt://` to a single node IP bypasses the LB and the routing table entirely, so it is not used in cluster deployments.
 
 ---
 
-## Bicep Template Reference
+## Deployment
 
-The deployment is split across one orchestrator template and four modules. All files live under `infra/`.
+This architecture is implemented twice in the repository, once in Bicep and once in Ansible. Both paths produce the same Azure resources (same VNet CIDRs, same subnet layout, same NSG rule set, same workspace configuration), write connection details to `.deployments/{scenario}-{engine}.json` (e.g. `peer-databricks-v2025-bicep.json` or `peer-databricks-v2025-ansible.json`), and drive the same connectivity-test notebook in `notebooks/neo4j_connectivity_test.ipynb`. Pick whichever tool matches your operational preference.
 
-### `databricks-main.bicep` — Orchestrator
+Both CLIs read configuration from `.arm-testing/config/settings.yaml` and support the same scenarios (`standalone-v2025`, `cluster-v2025`, `peer-databricks-v2025`).
 
-Entry point for the entire Databricks peering deployment. Runs at subscription scope (`targetScope = 'subscription'`) so it can create the Databricks resource group and write resources into both the Databricks and Neo4j resource groups in a single deployment.
+### Bicep — `infra/`
 
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `location` | required | Azure region for all resources |
-| `neo4jResourceGroup` | required | Name of the existing Neo4j resource group |
-| `neo4jVnetId` | required | Full resource ID of the existing Neo4j VNet |
-| `neo4jNsgName` | required | Name of the existing Neo4j NSG to update |
-| `databricksResourceGroup` | required | Name of the new resource group to create for Databricks |
-| `databricksWorkspaceName` | `neo4j-dbx` | Name for the Databricks workspace resource |
-| `databricksVnetCidr` | `192.168.0.0/16` | Address space for the Databricks VNet |
+| File | Role |
+|------|------|
+| `infra/databricks-main.bicep` | Subscription-scoped orchestrator; creates the Databricks resource group and coordinates the VNet, workspace, peering, and NSG-update modules in a single deployment |
+| `infra/modules/databricks-vnet.bicep` | Customer-managed VNet (192.168.0.0/16), delegated host and container subnets, empty NSGs, Standard SKU NAT gateway with static public IP |
+| `infra/modules/databricks-workspace.bicep` | Standard SKU Databricks workspace with VNet injection and Secure Cluster Connectivity enabled |
+| `infra/modules/vnet-peering.bicep` | One-directional peering connection; called twice (once per side) by the orchestrator to establish bidirectional peering |
+| `infra/modules/neo4j-nsg-peering.bicep` | Replaces the Neo4j NSG rule set with CIDR-scoped allow rules for the four Neo4j ports plus the deny-all at priority 200 |
+| `infra/main.bicep` | Entry point for the Neo4j side; deploys the VNet, identity, VMSS, and (for clusters) the internal load balancer |
 
-Outputs: `databricksWorkspaceUrl`, `databricksVnetId`
+Driven by `uv run bicep-deploy deploy --scenario peer-databricks-v2025`.
 
-Deployment sequence: creates the Databricks resource group, then deploys the VNet and workspace modules in parallel (both scoped to the Databricks resource group), then deploys both peering connections once the workspace is ready (each peering scoped to its respective resource group), with the NSG update running in parallel against the Neo4j resource group.
+### Ansible — `playbooks/`
 
----
+| File | Role |
+|------|------|
+| `playbooks/databricks.yml` | Orchestrator play; coordinates the Databricks network, workspace, peering, and NSG-update tasks |
+| `playbooks/tasks/databricks_network.yml` | Customer-managed VNet (192.168.0.0/16), delegated host and container subnets, empty NSGs, Standard SKU NAT gateway with static public IP |
+| `playbooks/tasks/databricks_workspace.yml` | Standard SKU Databricks workspace with VNet injection and Secure Cluster Connectivity enabled |
+| `playbooks/tasks/vnet_peering.yml` | Bidirectional VNet peering (both directions in one task file) |
+| `playbooks/tasks/nsg_update.yml` | Replaces the Neo4j NSG rule set with CIDR-scoped allow rules for the four Neo4j ports plus the deny-all at priority 200 |
+| `playbooks/neo4j.yml` | Entry point for the Neo4j side; runs the network, identity, VMSS, and (for clusters) load balancer tasks |
 
-### `modules/databricks-vnet.bicep`
+Driven by `uv run ansible-deploy deploy --scenario peer-databricks-v2025`.
 
-Creates the customer-managed VNet required for VNet injection. Provisions two empty NSGs (one per subnet), a static public IP, a Standard SKU NAT gateway, and the VNet itself with both subnets delegated to `Microsoft.Databricks/workspaces`. Subnet CIDRs are hardcoded to `192.168.0.0/26` (host) and `192.168.64.0/26` (container) within the default /16 address space.
+### Resulting NSG Rule Set on the Neo4j Subnet
 
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `location` | required | Azure region |
-| `resourceSuffix` | required | Unique suffix appended to all resource names |
-| `vnetCidr` | `192.168.0.0/16` | VNet address space |
-
-Outputs: `vnetId`, `vnetName`, `hostSubnetName`, `containerSubnetName`
-
----
-
-### `modules/databricks-workspace.bicep`
-
-Creates the Databricks workspace at Standard SKU with VNet injection and Secure Cluster Connectivity enabled. Uses API version `2024-05-01`, which sets `enableNoPublicIp` to `true` by default; the template sets it explicitly.
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `workspaceName` | required | Workspace resource name |
-| `location` | required | Azure region |
-| `managedResourceGroupId` | required | Full resource ID of the Databricks-managed resource group (constructed by the orchestrator as `{databricksResourceGroup}-managed`) |
-| `vnetId` | required | Resource ID of the customer-managed VNet |
-| `hostSubnetName` | required | Name of the host (driver) subnet |
-| `containerSubnetName` | required | Name of the container (worker) subnet |
-
-Outputs: `workspaceId`, `workspaceUrl`
-
----
-
-### `modules/vnet-peering.bicep`
-
-Creates a single one-directional VNet peering connection. Called twice by the orchestrator with different scopes: once scoped to the Databricks resource group (peering from Databricks to Neo4j) and once scoped to the Neo4j resource group (peering from Neo4j to Databricks). Uses the `existing` keyword to reference the local VNet without redeploying it.
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `localVnetName` | required | Name of the VNet on the initiating side of this peering |
-| `remoteVnetId` | required | Full resource ID of the VNet on the receiving side |
-| `peeringName` | required | Name for the peering connection resource |
-
-Settings: `allowVirtualNetworkAccess: true`, gateway transit and forwarding disabled.
-
----
-
-### `modules/neo4j-nsg-peering.bicep`
-
-Redeploys the full Neo4j NSG rule set, replacing the original Internet-open inbound rules for the four Neo4j ports with rules scoped to the Databricks CIDR. Adds a deny-all rule from the Databricks CIDR at priority 200. SSH (port 22) and the cluster inter-node ports (6000, 7000) are preserved unchanged.
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `nsgName` | required | Name of the existing Neo4j NSG to update |
-| `location` | required | Azure region |
-| `databricksCidr` | required | Databricks VNet CIDR used as the inbound source for Neo4j port allow rules |
-
-NSG rules after update:
+Both paths produce the same rules:
 
 | Priority | Name | Port | Source | Action |
 |----------|------|------|--------|--------|
 | 100 | SSH | 22 | Internet | Allow |
-| 101 | HTTPS | 7473 | `databricksCidr` | Allow |
-| 102 | HTTP | 7474 | `databricksCidr` | Allow |
-| 103 | Bolt | 7687 | `databricksCidr` | Allow |
+| 101 | HTTPS | 7473 | Databricks CIDR | Allow |
+| 102 | HTTP | 7474 | Databricks CIDR | Allow |
+| 103 | Bolt | 7687 | Databricks CIDR | Allow |
 | 104 | ClusterCommunication | 6000 | VirtualNetwork | Allow |
 | 105 | ClusterRaft | 7000 | VirtualNetwork | Allow |
-| 106 | BoltRouting | 7688 | `databricksCidr` | Allow |
-| 200 | DenyDatabricks | * | `databricksCidr` | Deny |
+| 106 | BoltRouting | 7688 | Databricks CIDR | Allow |
+| 110 | AzureLoadBalancerProbe | * | AzureLoadBalancer | Allow |
+| 200 | DenyDatabricks | * | Databricks CIDR | Deny |

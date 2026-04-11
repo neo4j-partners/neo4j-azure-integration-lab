@@ -149,7 +149,8 @@ secrets/
 # =============================================================================
 # Deployment
 # =============================================================================
-# Deployment tools working directory
+# Deployment tools working directory (match both deployments/ and repo root, depending on CWD)
+.arm-testing/
 deployments/.arm-testing/
 
 # Deployment details (contains credentials)
@@ -164,6 +165,23 @@ keycloak-infra/*.json
 *.tfstate.*
 .terraform/
 .terraform.lock.hcl
+
+# =============================================================================
+# Ansible
+# =============================================================================
+# Generated playbooks and related artifacts
+*.generated.yml
+*.generated.yaml
+ansible/generated/
+ansible_output/
+
+# Retry files created when a playbook fails (ansible-core < 2.12 default; opt-in after)
+*.retry
+
+# =============================================================================
+# Worklog (personal investigation notes, may contain real infra details)
+# =============================================================================
+worklog/
 
 # =============================================================================
 # Logs

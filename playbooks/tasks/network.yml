@@ -1,0 +1,122 @@
+---
+- name: Compute resource suffix from resource group name
+  ansible.builtin.set_fact:
+    resource_suffix: "{{ (resource_group | hash('sha1'))[:13] }}"
+
+- name: Create Neo4j network security group
+  azure.azcollection.azure_rm_securitygroup:
+    resource_group: "{{ resource_group }}"
+    name: "{{ nsg_name }}"
+    location: "{{ location }}"
+    state: present
+    purge_rules: true
+    rules:
+      - name: SSH
+        description: SSH
+        protocol: Tcp
+        source_port_range: "*"
+        destination_port_range: "22"
+        source_address_prefix: Internet
+        destination_address_prefix: "*"
+        access: Allow
+        priority: 100
+        direction: Inbound
+      - name: HTTPS
+        description: HTTPS
+        protocol: Tcp
+        source_port_range: "*"
+        destination_port_range: "7473"
+        source_address_prefix: Internet
+        destination_address_prefix: "*"
+        access: Allow
+        priority: 101
+        direction: Inbound
+      - name: HTTP
+        description: HTTP
+        protocol: Tcp
+        source_port_range: "*"
+        destination_port_range: "7474"
+        source_address_prefix: Internet
+        destination_address_prefix: "*"
+        access: Allow
+        priority: 102
+        direction: Inbound
+      - name: Bolt
+        description: Bolt
+        protocol: Tcp
+        source_port_range: "*"
+        destination_port_range: "7687"
+        source_address_prefix: Internet
+        destination_address_prefix: "*"
+        access: Allow
+        priority: 103
+        direction: Inbound
+      - name: ClusterCommunication
+        description: Cluster communication and transaction shipping (Neo4j 5.x)
+        protocol: Tcp
+        source_port_range: "*"
+        destination_port_range: "6000"
+        source_address_prefix: VirtualNetwork
+        destination_address_prefix: VirtualNetwork
+        access: Allow
+        priority: 104
+        direction: Inbound
+      - name: ClusterRaft
+        description: Raft consensus protocol (Neo4j 5.x)
+        protocol: Tcp
+        source_port_range: "*"
+        destination_port_range: "7000"
+        source_address_prefix: VirtualNetwork
+        destination_address_prefix: VirtualNetwork
+        access: Allow
+        priority: 105
+        direction: Inbound
+      - name: BoltRouting
+        description: Bolt routing connector for cluster-aware drivers
+        protocol: Tcp
+        source_port_range: "*"
+        destination_port_range: "7688"
+        source_address_prefix: Internet
+        destination_address_prefix: "*"
+        access: Allow
+        priority: 106
+        direction: Inbound
+      - name: AzureLoadBalancerProbe
+        protocol: Tcp
+        source_port_range: "*"
+        destination_port_range: "*"
+        source_address_prefix: AzureLoadBalancer
+        destination_address_prefix: "*"
+        access: Allow
+        priority: 110
+        direction: Inbound
+  register: nsg_result
+
+- name: Register NSG facts
+  ansible.builtin.set_fact:
+    neo4j_nsg_id: "{{ nsg_result.state.id }}"
+    neo4j_nsg_name: "{{ nsg_name }}"
+
+- name: Create Neo4j virtual network
+  azure.azcollection.azure_rm_virtualnetwork:
+    resource_group: "{{ resource_group }}"
+    name: "{{ vnet_name }}"
+    location: "{{ location }}"
+    address_prefixes_cidr:
+      - "10.0.0.0/8"
+    state: present
+  register: vnet_result
+
+- name: Create Neo4j subnet
+  azure.azcollection.azure_rm_subnet:
+    resource_group: "{{ resource_group }}"
+    virtual_network_name: "{{ vnet_name }}"
+    name: subnet
+    address_prefix_cidr: "10.0.0.0/16"
+    security_group: "{{ nsg_name }}"
+    state: present
+
+- name: Register VNet and subnet facts
+  ansible.builtin.set_fact:
+    neo4j_vnet_id: "{{ vnet_result.state.id }}"
+    neo4j_subnet_id: "/subscriptions/{{ lookup('env', 'AZURE_SUBSCRIPTION_ID') }}/resourceGroups/{{ resource_group }}/providers/Microsoft.Network/virtualNetworks/{{ vnet_name }}/subnets/subnet"

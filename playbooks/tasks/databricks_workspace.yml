@@ -1,0 +1,44 @@
+---
+- name: Set managed resource group ID
+  ansible.builtin.set_fact:
+    dbx_managed_rg_id: "/subscriptions/{{ lookup('env', 'AZURE_SUBSCRIPTION_ID') }}/resourceGroups/{{ dbx_managed_rg_name }}"
+
+- name: Create Databricks workspace
+  azure.azcollection.azure_rm_resource:
+    resource_group: "{{ databricks_resource_group }}"
+    provider: Databricks
+    resource_type: workspaces
+    resource_name: "{{ databricks_workspace_name }}"
+    api_version: "2024-05-01"
+    idempotency: true
+    body:
+      location: "{{ location }}"
+      sku:
+        name: premium
+      properties:
+        managedResourceGroupId: "{{ dbx_managed_rg_id }}"
+        parameters:
+          customVirtualNetworkId:
+            value: "{{ dbx_vnet_id }}"
+          customPublicSubnetName:
+            value: "{{ dbx_host_subnet_name }}"
+          customPrivateSubnetName:
+            value: "{{ dbx_container_subnet_name }}"
+          enableNoPublicIp:
+            value: true
+
+- name: Wait for Databricks workspace to finish provisioning
+  azure.azcollection.azure_rm_resource_info:
+    resource_group: "{{ databricks_resource_group }}"
+    provider: Databricks
+    resource_type: workspaces
+    resource_name: "{{ databricks_workspace_name }}"
+    api_version: "2024-05-01"
+  register: workspace_info
+  until: workspace_info.response[0].properties.provisioningState == 'Succeeded'
+  retries: 30
+  delay: 20
+
+- name: Register Databricks workspace URL
+  ansible.builtin.set_fact:
+    databricks_workspace_url: "{{ workspace_info.response[0].properties.workspaceUrl }}"

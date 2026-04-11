@@ -13,19 +13,19 @@ Azure Bicep templates and Python CLI for deploying Neo4j Enterprise Edition on A
 ```bash
 cd deployments
 uv sync                                          # Install dependencies
-uv run neo4j-deploy setup                        # Interactive configuration wizard
-uv run neo4j-deploy deploy --scenario standalone-v2025    # Deploy standalone
-uv run neo4j-deploy deploy --scenario cluster-v2025       # Deploy 3-node cluster
-uv run neo4j-deploy status                       # Check deployment status
-uv run neo4j-deploy test                         # Test most recent deployment
-uv run neo4j-deploy cleanup --all --force        # Delete all resources
+uv run bicep-deploy setup                        # Interactive configuration wizard
+uv run bicep-deploy deploy --scenario standalone-v2025    # Deploy standalone
+uv run bicep-deploy deploy --scenario cluster-v2025       # Deploy 3-node cluster
+uv run bicep-deploy status                       # Check deployment status
+uv run bicep-deploy test                         # Test most recent deployment
+uv run bicep-deploy cleanup --all --force        # Delete all resources
 ```
 
 ### Bicep Validation
 
 ```bash
 az bicep build --file infra/main.bicep           # Compile Bicep to ARM JSON
-uv run neo4j-deploy validate --scenario standalone-v2025  # Validate with what-if
+uv run bicep-deploy validate --scenario standalone-v2025  # Validate with what-if
 ```
 
 ### Bearer Token Validation (from `validate-bearer-token/` directory)
@@ -53,7 +53,7 @@ Cloud-init templates use placeholder variables (`${admin_password}`, `${node_cou
 ### Deployment CLI (`deployments/`)
 
 Typer-based CLI with these key modules:
-- `neo4j_deploy.py` - Main entry point, all CLI commands
+- `bicep_deploy.py` - Main entry point, all CLI commands
 - `src/deployment.py` - DeploymentEngine for parameter generation and Azure deployment
 - `src/orchestrator.py` - DeploymentOrchestrator for submission and output extraction
 - `src/monitor.py` - DeploymentMonitor for live status tracking
@@ -65,7 +65,7 @@ Typer-based CLI with these key modules:
 
 - `.arm-testing/config/settings.yaml` - Azure subscription, region, cleanup behavior
 - `.arm-testing/config/scenarios.yaml` - Test scenario definitions
-- `.deployments/{scenario}.json` - Saved connection info after successful deployment
+- `.deployments/{scenario}-{engine}.json` - Saved connection info after successful deployment (e.g. `peer-databricks-v2025-bicep.json`)
 
 ### M2M Authentication Flow
 

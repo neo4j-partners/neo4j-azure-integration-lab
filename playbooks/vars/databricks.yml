@@ -1,0 +1,19 @@
+---
+# Databricks integration variables
+# Override required values at runtime: -e databricks_resource_group=...
+
+databricks_resource_group: ""    # required at runtime
+databricks_workspace_name: neo4j-dbx
+databricks_vnet_cidr: 192.168.0.0/16
+databricks_host_subnet_prefix: 192.168.0.0/26
+databricks_container_subnet_prefix: 192.168.64.0/26
+dbx_host_subnet_name: dbx-host-subnet
+dbx_container_subnet_name: dbx-container-subnet
+dbx_managed_rg_name: "{{ databricks_resource_group }}-managed"
+
+# Resource naming (dbx_resource_suffix is computed at runtime)
+dbx_vnet_name: "vnet-dbx-{{ location }}-{{ dbx_resource_suffix }}"
+dbx_nat_pip_name: "pip-nat-dbx-{{ location }}-{{ dbx_resource_suffix }}"
+dbx_nat_gw_name: "nat-dbx-{{ location }}-{{ dbx_resource_suffix }}"
+dbx_host_nsg_name: "nsg-dbx-host-{{ location }}-{{ dbx_resource_suffix }}"
+dbx_container_nsg_name: "nsg-dbx-container-{{ location }}-{{ dbx_resource_suffix }}"

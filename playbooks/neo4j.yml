@@ -1,0 +1,71 @@
+---
+# Neo4j Enterprise deployment playbook
+#
+# Usage:
+#   ansible-playbook playbooks/neo4j.yml \
+#     -e resource_group=rg-neo4j-test \
+#     -e location=eastus \
+#     -e admin_password=<secret> \
+#     -e node_count=1
+#
+# Auth: set ANSIBLE_AZURE_AUTH_SOURCE=cli (handled by ansible_deploy.py). AZURE_SUBSCRIPTION_ID
+# is fetched automatically. AZURE_CLIENT_ID / AZURE_SECRET / AZURE_TENANT are only needed for
+# service principal auth and are not required when using az login.
+#
+# node_count=1  -> standalone (no load balancer)
+# node_count>=3 -> cluster with internal load balancer
+
+- hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files:
+    - vars/main.yml
+  tasks:
+    - name: Assert required variables are set
+      ansible.builtin.assert:
+        that:
+          - resource_group | length > 0
+          - location | length > 0
+          - admin_password | length > 0
+        fail_msg: "resource_group, location, and admin_password are required"
+
+    - name: Include network tasks
+      ansible.builtin.include_tasks: tasks/network.yml
+
+    - name: Include identity tasks
+      ansible.builtin.include_tasks: tasks/identity.yml
+
+    - name: Compute deployment facts
+      ansible.builtin.set_fact:
+        license_agreement: "{{ 'eval' if license_type == 'Evaluation' else 'yes' }}"
+        password_base64: "{{ admin_password | b64encode }}"
+        load_balancer_condition: "{{ (node_count | int) >= 3 }}"
+        cloud_init_template_file: "{{ 'standalone.yaml.j2' if (node_count | int) == 1 else 'cluster.yaml.j2' }}"
+
+    - name: Render cloud-init template
+      ansible.builtin.set_fact:
+        cloud_init_rendered: "{{ lookup('template', 'templates/' + cloud_init_template_file) }}"
+
+    - name: Base64-encode cloud-init
+      ansible.builtin.set_fact:
+        cloud_init_base64: "{{ cloud_init_rendered | b64encode }}"
+
+    - name: Include load balancer tasks
+      ansible.builtin.include_tasks: tasks/loadbalancer.yml
+
+    - name: Include VMSS tasks
+      ansible.builtin.include_tasks: tasks/vmss.yml
+
+    - name: Register deployment outputs
+      ansible.builtin.set_fact:
+        neo4j_deployment_outputs:
+          vnet_id: "{{ neo4j_vnet_id }}"
+          subnet_id: "{{ neo4j_subnet_id }}"
+          nsg_id: "{{ neo4j_nsg_id }}"
+          nsg_name: "{{ neo4j_nsg_name }}"
+          identity_id: "{{ neo4j_identity_id }}"
+          vmss_id: "{{ neo4j_vmss_id }}"
+          vmss_name: "{{ neo4j_vmss_name }}"
+          lb_private_ip: "{{ lb_private_ip }}"
+          resource_group: "{{ resource_group }}"
+          resource_suffix: "{{ resource_suffix }}"

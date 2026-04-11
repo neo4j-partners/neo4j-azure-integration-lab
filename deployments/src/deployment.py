@@ -18,6 +18,7 @@ from rich.console import Console
 from .constants import PARAMS_DIR
 from .models import Settings, TestScenario
 from .password import PasswordManager
+from .utils import find_deployment_file
 from .utils import (
     get_timestamp,
     load_json,
@@ -131,10 +132,11 @@ class DeploymentEngine:
 
         # Load source scenario's saved deployment JSON
         deployments_dir = Path(__file__).parent.parent.parent / ".deployments"
-        source_file = deployments_dir / f"{scenario.source_scenario}.json"
-        if not source_file.exists():
+        source_file = find_deployment_file(scenario.source_scenario, deployments_dir)
+        if not source_file:
             raise FileNotFoundError(
-                f"Source scenario deployment not found: {source_file}\n"
+                f"Source scenario deployment not found: {scenario.source_scenario}-bicep.json"
+                f" or {scenario.source_scenario}-ansible.json in {deployments_dir}\n"
                 f"Deploy '{scenario.source_scenario}' first, then run this scenario."
             )
 
@@ -314,7 +316,7 @@ class DeploymentEngine:
             config_lines = [
                 "",
                 f"# M2M OIDC Authentication ({m2m.display_name})",
-                "# Auto-configured by neo4j-deploy",
+                "# Auto-configured by bicep-deploy",
                 "dbms.security.authentication_providers=oidc-m2m,native",
                 "dbms.security.authorization_providers=oidc-m2m,native",
                 f"dbms.security.oidc.m2m.visible={visible}",
@@ -340,7 +342,7 @@ class DeploymentEngine:
         config_lines = [
             "",
             "# M2M OIDC Authentication (Microsoft Entra ID)",
-            "# Auto-configured by neo4j-deploy",
+            "# Auto-configured by bicep-deploy",
             "dbms.security.authentication_providers=oidc-m2m,native",
             "dbms.security.authorization_providers=oidc-m2m,native",
             "dbms.security.oidc.m2m.visible=false",
@@ -489,22 +491,22 @@ class DeploymentPlanner:
             timestamp: Optional timestamp (generates new one if None)
 
         Returns:
-            Deployment name following pattern: neo4j-deploy-{scenario}-{timestamp}
+            Deployment name following pattern: bicep-deploy-{scenario}-{timestamp}
 
         Example:
-            neo4j-deploy-standalone-v5-20250116-143052
+            bicep-deploy-standalone-v5-20250116-143052
         """
         if not timestamp:
             timestamp = get_timestamp()
 
         safe_scenario = scenario_name.replace("_", "-").replace(".", "")
-        deploy_name = f"neo4j-deploy-{safe_scenario}-{timestamp}"
+        deploy_name = f"bicep-deploy-{safe_scenario}-{timestamp}"
 
         # Azure deployment names: max 64 chars
         if len(deploy_name) > 64:
-            max_scenario = 64 - 13 - 16  # "neo4j-deploy-" + timestamp
+            max_scenario = 64 - 13 - 16  # "bicep-deploy-" + timestamp
             if len(safe_scenario) > max_scenario:
                 safe_scenario = safe_scenario[:max_scenario]
-            deploy_name = f"neo4j-deploy-{safe_scenario}-{timestamp}"
+            deploy_name = f"bicep-deploy-{safe_scenario}-{timestamp}"
 
         return deploy_name

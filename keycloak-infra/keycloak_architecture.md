@@ -11,7 +11,7 @@ The integration uses the OAuth 2.0 Client Credentials Grant for machine-to-machi
                           ==============
 
   keycloak-infra/                    deployments/
-  deploy.sh deploy                   neo4j-deploy setup
+  deploy.sh deploy                   bicep-deploy setup
        |                                  |
        v                                  v
   +------------------+             +-----------------+
@@ -22,7 +22,7 @@ The integration uses the OAuth 2.0 Client Credentials Grant for machine-to-machi
   | roles, mappers)  |             | OIDC settings   |
   +------------------+             +-----------------+
        |                                  |
-       | writes .deployment.json          | neo4j-deploy deploy
+       | writes .deployment.json          | bicep-deploy deploy
        | (discovery_uri, token_endpoint,  |
        |  client_id, client_secret,       v
        |  audience, role_mapping)   +-----------------+
@@ -348,9 +348,9 @@ When the user selects Keycloak, every OIDC value is populated from `.deployment.
 
 `generate_neo4j_oidc_config` in `m2m_setup.py` uses the same branching logic to show the user a preview during setup.
 
-### Deployment info (`neo4j_deploy.py`)
+### Deployment info (`bicep_deploy.py`)
 
-`save_deployment_details` writes an `m2m_auth` block to `.deployments/{scenario}.json`. When `provider_type` is `"keycloak"`, the block includes `provider_type`, `discovery_uri`, `token_endpoint`, `audience`, `client_id`, `client_secret`, `role_mapping`, and `display_name`. The validation script reads this file to know how and where to acquire tokens.
+`save_deployment_details` writes an `m2m_auth` block to `.deployments/{scenario}-{engine}.json` (e.g. `standalone-v2025-bicep.json`). When `provider_type` is `"keycloak"`, the block includes `provider_type`, `discovery_uri`, `token_endpoint`, `audience`, `client_id`, `client_secret`, `role_mapping`, and `display_name`. The validation script reads this file to know how and where to acquire tokens.
 
 ### Token validation (`validate_bearer.py`)
 
@@ -393,10 +393,10 @@ Produced by `deploy.sh`, consumed by the setup wizard and validation script:
 cd keycloak-infra && ./deploy.sh deploy
 
 # 2. Configure Neo4j with Keycloak OIDC
-cd deployments && uv run neo4j-deploy setup    # Select "Keycloak" at M2M step
+cd deployments && uv run bicep-deploy setup    # Select "Keycloak" at M2M step
 
 # 3. Deploy Neo4j
-uv run neo4j-deploy deploy --scenario standalone-v2025
+uv run bicep-deploy deploy --scenario standalone-v2025
 
 # 4. Validate bearer token auth
 cd ../validate-bearer-token

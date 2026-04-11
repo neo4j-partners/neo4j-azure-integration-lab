@@ -1,0 +1,80 @@
+---
+- name: Compute Databricks resource suffix
+  ansible.builtin.set_fact:
+    dbx_resource_suffix: "{{ (databricks_resource_group | hash('sha1'))[:13] }}"
+
+- name: Create Databricks host NSG
+  azure.azcollection.azure_rm_securitygroup:
+    resource_group: "{{ databricks_resource_group }}"
+    name: "{{ dbx_host_nsg_name }}"
+    location: "{{ location }}"
+    state: present
+
+- name: Create Databricks container NSG
+  azure.azcollection.azure_rm_securitygroup:
+    resource_group: "{{ databricks_resource_group }}"
+    name: "{{ dbx_container_nsg_name }}"
+    location: "{{ location }}"
+    state: present
+
+- name: Create NAT gateway public IP
+  azure.azcollection.azure_rm_publicipaddress:
+    resource_group: "{{ databricks_resource_group }}"
+    name: "{{ dbx_nat_pip_name }}"
+    location: "{{ location }}"
+    sku: Standard
+    allocation_method: Static
+    state: present
+
+- name: Create NAT gateway
+  azure.azcollection.azure_rm_natgateway:
+    resource_group: "{{ databricks_resource_group }}"
+    name: "{{ dbx_nat_gw_name }}"
+    location: "{{ location }}"
+    sku:
+      name: standard
+    public_ip_addresses:
+      - "{{ dbx_nat_pip_name }}"
+    state: present
+  register: nat_gw_result
+
+- name: Create Databricks virtual network
+  azure.azcollection.azure_rm_virtualnetwork:
+    resource_group: "{{ databricks_resource_group }}"
+    name: "{{ dbx_vnet_name }}"
+    location: "{{ location }}"
+    address_prefixes_cidr:
+      - "{{ databricks_vnet_cidr }}"
+    state: present
+
+- name: Create Databricks host subnet with delegation and NAT gateway
+  azure.azcollection.azure_rm_subnet:
+    resource_group: "{{ databricks_resource_group }}"
+    virtual_network_name: "{{ dbx_vnet_name }}"
+    name: "{{ dbx_host_subnet_name }}"
+    address_prefix_cidr: "{{ databricks_host_subnet_prefix }}"
+    security_group: "{{ dbx_host_nsg_name }}"
+    nat_gateway: "{{ dbx_nat_gw_name }}"
+    delegations:
+      - name: databricks-delegation
+        serviceName: Microsoft.Databricks/workspaces
+    state: present
+
+- name: Create Databricks container subnet with delegation and NAT gateway
+  azure.azcollection.azure_rm_subnet:
+    resource_group: "{{ databricks_resource_group }}"
+    virtual_network_name: "{{ dbx_vnet_name }}"
+    name: "{{ dbx_container_subnet_name }}"
+    address_prefix_cidr: "{{ databricks_container_subnet_prefix }}"
+    security_group: "{{ dbx_container_nsg_name }}"
+    nat_gateway: "{{ dbx_nat_gw_name }}"
+    delegations:
+      - name: databricks-delegation
+        serviceName: Microsoft.Databricks/workspaces
+    state: present
+
+- name: Set Databricks VNet and subnet ID facts
+  ansible.builtin.set_fact:
+    dbx_vnet_id: "/subscriptions/{{ lookup('env', 'AZURE_SUBSCRIPTION_ID') }}/resourceGroups/{{ databricks_resource_group }}/providers/Microsoft.Network/virtualNetworks/{{ dbx_vnet_name }}"
+    dbx_host_subnet_id: "/subscriptions/{{ lookup('env', 'AZURE_SUBSCRIPTION_ID') }}/resourceGroups/{{ databricks_resource_group }}/providers/Microsoft.Network/virtualNetworks/{{ dbx_vnet_name }}/subnets/{{ dbx_host_subnet_name }}"
+    dbx_container_subnet_id: "/subscriptions/{{ lookup('env', 'AZURE_SUBSCRIPTION_ID') }}/resourceGroups/{{ databricks_resource_group }}/providers/Microsoft.Network/virtualNetworks/{{ dbx_vnet_name }}/subnets/{{ dbx_container_subnet_name }}"

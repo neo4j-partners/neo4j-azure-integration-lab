@@ -1,36 +1,9 @@
 param location string
 param resourceSuffix string
 param loadBalancerCondition bool
+param subnetId string
 
 var loadBalancerName = 'lb-neo4j-${location}-${resourceSuffix}'
-var publicIpName = 'ip-neo4j-${location}-${resourceSuffix}'
-
-resource publicIp 'Microsoft.Network/publicIPAddresses@2025-03-01' = if (loadBalancerCondition) {
-  name: publicIpName
-  location: location
-  sku: {
-    name: 'Standard'
-    tier: 'Regional'
-  }
-  zones: [
-    '2'
-    '3'
-    '1'
-  ]
-  properties: {
-    ipTags: [
-      {
-        ipTagType: 'RoutingPreference'
-        tag: 'Internet'
-      }
-    ]
-    publicIPAddressVersion: 'IPv4'
-    publicIPAllocationMethod: 'Static'
-    dnsSettings: {
-      domainNameLabel: 'neo4j-lb-${resourceSuffix}'
-    }
-  }
-}
 
 resource loadBalancer 'Microsoft.Network/loadBalancers@2025-03-01' = if (loadBalancerCondition) {
   name: loadBalancerName
@@ -49,9 +22,8 @@ resource loadBalancer 'Microsoft.Network/loadBalancers@2025-03-01' = if (loadBal
       {
         name: 'lbipnew'
         properties: {
-          publicIPAddress: {
-            id: publicIp.id
-          }
+          subnet: { id: subnetId }
+          privateIPAllocationMethod: 'Dynamic'
         }
       }
     ]
@@ -67,7 +39,7 @@ resource loadBalancer 'Microsoft.Network/loadBalancers@2025-03-01' = if (loadBal
           enableFloatingIP: false
           idleTimeoutInMinutes: 4
           protocol: 'Tcp'
-          enableTcpReset: false
+          enableTcpReset: true
           loadDistribution: 'Default'
           disableOutboundSnat: true
           backendAddressPool: {
@@ -94,7 +66,7 @@ resource loadBalancer 'Microsoft.Network/loadBalancers@2025-03-01' = if (loadBal
           enableFloatingIP: false
           idleTimeoutInMinutes: 4
           protocol: 'Tcp'
-          enableTcpReset: false
+          enableTcpReset: true
           loadDistribution: 'Default'
           disableOutboundSnat: true
           backendAddressPool: {
@@ -107,6 +79,33 @@ resource loadBalancer 'Microsoft.Network/loadBalancers@2025-03-01' = if (loadBal
           ]
           probe: {
             id: resourceId('Microsoft.Network/loadBalancers/probes', loadBalancerName, 'boltprobe')
+          }
+        }
+      }
+      {
+        name: 'inbound7688'
+        properties: {
+          frontendIPConfiguration: {
+            id: resourceId('Microsoft.Network/loadBalancers/frontendIpConfigurations', loadBalancerName, 'lbipnew')
+          }
+          frontendPort: 7688
+          backendPort: 7688
+          enableFloatingIP: false
+          idleTimeoutInMinutes: 4
+          protocol: 'Tcp'
+          enableTcpReset: true
+          loadDistribution: 'Default'
+          disableOutboundSnat: true
+          backendAddressPool: {
+            id: resourceId('Microsoft.Network/loadBalancers/backendAddressPools', loadBalancerName, 'backend')
+          }
+          backendAddressPools: [
+            {
+              id: resourceId('Microsoft.Network/loadBalancers/backendAddressPools', loadBalancerName, 'backend')
+            }
+          ]
+          probe: {
+            id: resourceId('Microsoft.Network/loadBalancers/probes', loadBalancerName, 'boltroutingprobe')
           }
         }
       }
@@ -126,8 +125,20 @@ resource loadBalancer 'Microsoft.Network/loadBalancers@2025-03-01' = if (loadBal
       {
         name: 'boltprobe'
         properties: {
-          protocol: 'Tcp'
-          port: 7687
+          protocol: 'Http'
+          port: 7474
+          requestPath: '/'
+          intervalInSeconds: 5
+          numberOfProbes: 1
+          probeThreshold: 1
+        }
+      }
+      {
+        name: 'boltroutingprobe'
+        properties: {
+          protocol: 'Http'
+          port: 7474
+          requestPath: '/'
           intervalInSeconds: 5
           numberOfProbes: 1
           probeThreshold: 1
@@ -138,5 +149,4 @@ resource loadBalancer 'Microsoft.Network/loadBalancers@2025-03-01' = if (loadBal
 }
 
 output loadBalancerBackendAddressPools array = loadBalancerCondition ? loadBalancer!.properties.backendAddressPools : []
-output publicIpAddress string = loadBalancerCondition ? publicIp!.properties.ipAddress : ''
-output publicIpFqdn string = loadBalancerCondition ? publicIp!.properties.dnsSettings.fqdn : ''
+output privateIpAddress string = loadBalancerCondition ? loadBalancer!.properties.frontendIPConfigurations[0].properties.privateIPAddress : ''

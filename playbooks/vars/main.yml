@@ -1,0 +1,21 @@
+---
+# Neo4j deployment variables
+# Override required values at runtime: -e resource_group=... -e location=... -e admin_password=...
+
+admin_username: neo4j
+admin_password: ""                # required at runtime
+vm_size: Standard_D2s_v5
+node_count: 1
+disk_size: 32
+graph_database_version: "2025"
+license_type: Enterprise          # Enterprise | Evaluation
+location: ""                      # required at runtime
+oidc_config: "none"
+resource_group: ""                # required at runtime
+
+# Resource naming (mirrors Bicep convention; resource_suffix is computed at runtime)
+nsg_name: "nsg-neo4j-{{ location }}-{{ resource_suffix }}"
+vnet_name: "vnet-neo4j-{{ location }}-{{ resource_suffix }}"
+identity_name: "usermanaged-neo4j-{{ location }}-{{ resource_suffix }}"
+lb_name: "lb-neo4j-{{ location }}-{{ resource_suffix }}"
+vmss_name: "vmss-neo4j-{{ location }}-{{ resource_suffix }}"

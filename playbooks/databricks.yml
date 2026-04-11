@@ -1,0 +1,74 @@
+---
+# Databricks integration playbook
+#
+# Run after neo4j.yml to deploy a Databricks workspace and establish VNet peering.
+#
+# Usage (standalone, after a previous neo4j.yml run):
+#   ansible-playbook playbooks/databricks.yml \
+#     -e resource_group=rg-neo4j-test \
+#     -e location=eastus \
+#     -e databricks_resource_group=rg-dbx-test \
+#     -e neo4j_vnet_id=<vnet-resource-id> \
+#     -e neo4j_nsg_name=<nsg-name> \
+#     -e resource_suffix=<suffix-from-bicep-deploy>
+#
+# Usage (chained after neo4j.yml in one command):
+#   ansible-playbook playbooks/neo4j.yml playbooks/databricks.yml \
+#     -e resource_group=rg-neo4j-test \
+#     -e location=eastus \
+#     -e admin_password=<secret> \
+#     -e node_count=3 \
+#     -e databricks_resource_group=rg-dbx-test
+#
+# Auth: set AZURE_AUTH_SOURCE=cli (handled by ansible_deploy.py). AZURE_SUBSCRIPTION_ID is
+# fetched automatically. AZURE_CLIENT_ID / AZURE_SECRET / AZURE_TENANT are only needed for
+# service principal auth and are not required when using az login.
+
+- hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files:
+    - vars/main.yml
+    - vars/databricks.yml
+  tasks:
+    - name: Assert required variables are set
+      ansible.builtin.assert:
+        that:
+          - databricks_resource_group | length > 0
+          - location | length > 0
+          - neo4j_vnet_id is defined
+          - neo4j_nsg_name is defined
+          - resource_group | length > 0
+        fail_msg: >
+          databricks_resource_group, location, neo4j_vnet_id, neo4j_nsg_name,
+          and resource_group are required. When running standalone, pass
+          neo4j_vnet_id and neo4j_nsg_name as --extra-vars.
+
+    - name: Set neo4j_resource_group alias
+      ansible.builtin.set_fact:
+        neo4j_resource_group: "{{ resource_group }}"
+
+    - name: Compute resource suffix if not already set
+      ansible.builtin.set_fact:
+        resource_suffix: "{{ (resource_group | hash('sha1'))[:13] }}"
+      when: resource_suffix is not defined
+
+    - name: Include Databricks network tasks
+      ansible.builtin.include_tasks: tasks/databricks_network.yml
+
+    - name: Include Databricks workspace tasks
+      ansible.builtin.include_tasks: tasks/databricks_workspace.yml
+
+    - name: Include VNet peering tasks
+      ansible.builtin.include_tasks: tasks/vnet_peering.yml
+
+    - name: Include NSG update tasks
+      ansible.builtin.include_tasks: tasks/nsg_update.yml
+
+    - name: Print Databricks deployment summary
+      ansible.builtin.debug:
+        msg:
+          - "Databricks deployment complete"
+          - "Workspace URL: https://{{ databricks_workspace_url }}"
+          - "VNet peering established between {{ neo4j_resource_group }} and {{ databricks_resource_group }}"
+          - "Neo4j NSG updated to allow Databricks CIDR {{ databricks_vnet_cidr }}"

@@ -9,7 +9,7 @@ resource databricksWorkspace 'Microsoft.Databricks/workspaces@2024-05-01' = {
   name: workspaceName
   location: location
   sku: {
-    name: 'standard'
+    name: 'premium'
   }
   properties: {
     managedResourceGroupId: managedResourceGroupId

@@ -42,7 +42,7 @@ uv run validate_bearer.py --validate-token
 
 ## What It Does
 
-1. **Loads deployment configuration** from `.deployments/{scenario}.json`
+1. **Loads deployment configuration** from `.deployments/{scenario}-{engine}.json`
 2. **Tests basic authentication** (username/password) to verify Neo4j is running
 3. **Acquires bearer token** from Microsoft Entra ID using client credentials flow
 4. **Tests bearer token authentication** against Neo4j
@@ -55,7 +55,7 @@ With `--validate-token`, the script stops after step 3 and displays the token de
 
 ## Configuration File
 
-The script reads from `.deployments/{scenario}.json`, which is created by `neo4j-deploy` and contains connection and M2M authentication details. Both Entra ID and Keycloak providers are supported.
+The script reads from `.deployments/{scenario}-{engine}.json` (e.g. `standalone-v2025-bicep.json`), which is created by `bicep-deploy` or `ansible-deploy` and contains connection and M2M authentication details. Both Entra ID and Keycloak providers are supported.
 
 ### Entra ID
 
@@ -122,13 +122,13 @@ To validate only the token (without connecting to Neo4j):
 uv run validate_bearer.py --scenario standalone-v2025 --validate-token
 ```
 
-You can also test against a local Keycloak started via `keycloak-test-client/` — just ensure the `.deployments/{scenario}.json` points to `http://localhost:8080` as the token endpoint.
+You can also test against a local Keycloak started via `keycloak-test-client/` — just ensure the `.deployments/{scenario}-{engine}.json` points to `http://localhost:8080` as the token endpoint.
 
 ## Troubleshooting
 
 ### "M2M authentication is not enabled"
 
-Run `uv run neo4j-deploy setup` and enable M2M authentication in Step 7, then redeploy.
+Run `uv run bicep-deploy setup` and enable M2M authentication in Step 7, then redeploy.
 
 ### "Token acquisition failed"
 

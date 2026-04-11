@@ -194,7 +194,7 @@ class ResourceGroupManager:
             "created": created,
             "owner": owner_email,
             "deployment-id": deployment_id,
-            "managed-by": "neo4j-deploy",
+            "managed-by": "bicep-deploy",
             "cleanup-mode": cleanup_mode.value,
         }
 
@@ -292,7 +292,7 @@ class ResourceGroupManager:
         try:
             result = run_command(
                 "az group list "
-                "--tag managed-by=neo4j-deploy "
+                "--tag managed-by=bicep-deploy "
                 "--output json",
                 check=False,
             )

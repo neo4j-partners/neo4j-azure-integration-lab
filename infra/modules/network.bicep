@@ -107,6 +107,19 @@ resource networkSG 'Microsoft.Network/networkSecurityGroups@2025-03-01' = {
           direction: 'Inbound'
         }
       }
+      {
+        name: 'AzureLoadBalancerProbe'
+        properties: {
+          protocol: 'Tcp'
+          sourcePortRange: '*'
+          destinationPortRange: '*'
+          sourceAddressPrefix: 'AzureLoadBalancer'
+          destinationAddressPrefix: '*'
+          access: 'Allow'
+          priority: 110
+          direction: 'Inbound'
+        }
+      }
     ]
   }
 }

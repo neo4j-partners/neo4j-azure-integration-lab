@@ -3,7 +3,7 @@
 Validate Neo4j M2M Bearer Token Authentication
 
 This script tests bearer token authentication against a deployed Neo4j instance
-using the configuration from .deployments/{scenario}.json
+using the configuration from .deployments/{scenario}-{engine}.json (e.g. standalone-v2025-bicep.json)
 
 Usage:
     # With client secret from environment
@@ -61,9 +61,19 @@ def decode_jwt_payload(token: str) -> dict:
 DEFAULT_DEPLOYMENTS_DIR = Path(__file__).parent.parent / ".deployments"
 
 
+def _find_deployment_file(scenario: str, deployments_dir: Path) -> Path | None:
+    """Return the engine-keyed deployment JSON for scenario, or None if not found."""
+    candidates = [
+        deployments_dir / f"{scenario}-bicep.json",
+        deployments_dir / f"{scenario}-ansible.json",
+    ]
+    existing = [p for p in candidates if p.exists()]
+    return max(existing, key=lambda p: p.stat().st_mtime) if existing else None
+
+
 def load_deployment_config(scenario: str, deployments_dir: Path = DEFAULT_DEPLOYMENTS_DIR) -> dict:
     """
-    Load deployment configuration from .deployments/{scenario}.json
+    Load deployment configuration from .deployments/{scenario}-{engine}.json
 
     Args:
         scenario: Scenario name (e.g., "standalone-v2025")
@@ -75,12 +85,13 @@ def load_deployment_config(scenario: str, deployments_dir: Path = DEFAULT_DEPLOY
     Raises:
         FileNotFoundError: If deployment file doesn't exist
     """
-    file_path = deployments_dir / f"{scenario}.json"
+    file_path = _find_deployment_file(scenario, deployments_dir)
 
-    if not file_path.exists():
+    if not file_path:
         raise FileNotFoundError(
-            f"Deployment file not found: {file_path}\n"
-            f"Available deployments: {list(deployments_dir.glob('*.json'))}"
+            f"Deployment file not found: {scenario}-bicep.json or {scenario}-ansible.json"
+            f" in {deployments_dir}\n"
+            f"Available deployments: {[p.name for p in deployments_dir.glob('*.json')]}"
         )
 
     with open(file_path) as f:
@@ -341,7 +352,7 @@ def main():
             Panel(
                 "[yellow]M2M authentication is not enabled for this deployment.[/yellow]\n\n"
                 "To enable M2M authentication:\n"
-                "1. Run [cyan]uv run neo4j-deploy setup[/cyan] and enable M2M in Step 7\n"
+                "1. Run [cyan]uv run bicep-deploy setup[/cyan] and enable M2M in Step 7\n"
                 "2. Redeploy the scenario\n\n"
                 "Or manually configure OIDC in neo4j.conf on the server.",
                 title="M2M Not Configured",

@@ -1,0 +1,98 @@
+---
+- name: Update Neo4j NSG with Databricks peering rules
+  # purge_rules: true replaces the entire ruleset in one PUT. Azure's processing may briefly
+  # drop the AzureLoadBalancerProbe allow rule during the transition, causing the LB to mark
+  # all backends unhealthy. The pause below gives probes time to recover before deployment
+  # is declared complete.
+  azure.azcollection.azure_rm_securitygroup:
+    resource_group: "{{ neo4j_resource_group }}"
+    name: "{{ neo4j_nsg_name }}"
+    location: "{{ location }}"
+    state: present
+    purge_rules: true
+    rules:
+      - name: SSH
+        protocol: Tcp
+        source_port_range: "*"
+        destination_port_range: "22"
+        source_address_prefix: Internet
+        destination_address_prefix: "*"
+        access: Allow
+        priority: 100
+        direction: Inbound
+      - name: HTTPS
+        protocol: Tcp
+        source_port_range: "*"
+        destination_port_range: "7473"
+        source_address_prefix: "{{ databricks_vnet_cidr }}"
+        destination_address_prefix: "*"
+        access: Allow
+        priority: 101
+        direction: Inbound
+      - name: HTTP
+        protocol: Tcp
+        source_port_range: "*"
+        destination_port_range: "7474"
+        source_address_prefix: "{{ databricks_vnet_cidr }}"
+        destination_address_prefix: "*"
+        access: Allow
+        priority: 102
+        direction: Inbound
+      - name: Bolt
+        protocol: Tcp
+        source_port_range: "*"
+        destination_port_range: "7687"
+        source_address_prefix: "{{ databricks_vnet_cidr }}"
+        destination_address_prefix: "*"
+        access: Allow
+        priority: 103
+        direction: Inbound
+      - name: ClusterCommunication
+        protocol: Tcp
+        source_port_range: "*"
+        destination_port_range: "6000"
+        source_address_prefix: VirtualNetwork
+        destination_address_prefix: VirtualNetwork
+        access: Allow
+        priority: 104
+        direction: Inbound
+      - name: ClusterRaft
+        protocol: Tcp
+        source_port_range: "*"
+        destination_port_range: "7000"
+        source_address_prefix: VirtualNetwork
+        destination_address_prefix: VirtualNetwork
+        access: Allow
+        priority: 105
+        direction: Inbound
+      - name: BoltRouting
+        protocol: Tcp
+        source_port_range: "*"
+        destination_port_range: "7688"
+        source_address_prefix: "{{ databricks_vnet_cidr }}"
+        destination_address_prefix: "*"
+        access: Allow
+        priority: 106
+        direction: Inbound
+      - name: AzureLoadBalancerProbe
+        protocol: Tcp
+        source_port_range: "*"
+        destination_port_range: "*"
+        source_address_prefix: AzureLoadBalancer
+        destination_address_prefix: "*"
+        access: Allow
+        priority: 110
+        direction: Inbound
+      - name: DenyDatabricks
+        protocol: "*"
+        source_port_range: "*"
+        destination_port_range: "*"
+        source_address_prefix: "{{ databricks_vnet_cidr }}"
+        destination_address_prefix: "*"
+        access: Deny
+        priority: 200
+        direction: Inbound
+
+- name: Wait for LB probes to recover after NSG update
+  ansible.builtin.pause:
+    seconds: 30

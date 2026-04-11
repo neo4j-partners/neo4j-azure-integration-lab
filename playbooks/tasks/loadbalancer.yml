@@ -1,0 +1,81 @@
+---
+- name: Create internal load balancer
+  azure.azcollection.azure_rm_loadbalancer:
+    resource_group: "{{ resource_group }}"
+    name: "{{ lb_name }}"
+    location: "{{ location }}"
+    state: present
+    sku: Standard
+    frontend_ip_configurations:
+      - name: lbipnew
+        subnet: "{{ neo4j_subnet_id }}"
+        private_ip_allocation_method: Dynamic
+    backend_address_pools:
+      - name: backend
+    probes:
+      - name: httpprobe
+        protocol: Http
+        port: 7474
+        request_path: /
+        interval: 5
+        fail_count: 1
+      - name: boltprobe
+        protocol: Http
+        port: 7474
+        request_path: /
+        interval: 5
+        fail_count: 1
+      - name: boltroutingprobe
+        protocol: Http
+        port: 7474
+        request_path: /
+        interval: 5
+        fail_count: 1
+    load_balancing_rules:
+      - name: inboundrule7474
+        frontend_ip_configuration: lbipnew
+        frontend_port: 7474
+        backend_port: 7474
+        protocol: Tcp
+        backend_address_pool: backend
+        probe: httpprobe
+        idle_timeout: 4
+        enable_floating_ip: false
+        disable_outbound_snat: true
+        enable_tcp_reset: true
+      - name: inbound7687
+        frontend_ip_configuration: lbipnew
+        frontend_port: 7687
+        backend_port: 7687
+        protocol: Tcp
+        backend_address_pool: backend
+        probe: boltprobe
+        idle_timeout: 4
+        enable_floating_ip: false
+        disable_outbound_snat: true
+        enable_tcp_reset: true
+      - name: inbound7688
+        frontend_ip_configuration: lbipnew
+        frontend_port: 7688
+        backend_port: 7688
+        protocol: Tcp
+        backend_address_pool: backend
+        probe: boltroutingprobe
+        idle_timeout: 4
+        enable_floating_ip: false
+        disable_outbound_snat: true
+        enable_tcp_reset: true
+  register: lb_result
+  when: load_balancer_condition | bool
+
+- name: Register load balancer facts
+  ansible.builtin.set_fact:
+    lb_backend_pool_id: "{{ lb_result.state.backend_address_pools[0].id }}"
+    lb_private_ip: "{{ lb_result.state.frontend_ip_configurations[0].private_ip_address }}"
+  when: load_balancer_condition | bool
+
+- name: Set empty load balancer facts when load balancer is not deployed
+  ansible.builtin.set_fact:
+    lb_backend_pool_id: ""
+    lb_private_ip: ""
+  when: not (load_balancer_condition | bool)

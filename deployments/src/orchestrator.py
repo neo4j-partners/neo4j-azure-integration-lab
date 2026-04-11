@@ -753,11 +753,11 @@ class DeploymentPlanner:
             timestamp: Optional timestamp (generates new if not provided)
 
         Returns:
-            Deployment name following pattern: neo4j-deploy-{scenario}-{timestamp}
+            Deployment name following pattern: bicep-deploy-{scenario}-{timestamp}
 
         Example:
             >>> generate_deployment_name("standalone-v5")
-            "neo4j-deploy-standalone-v5-20250116-143052"
+            "bicep-deploy-standalone-v5-20250116-143052"
         """
         if not timestamp:
             timestamp = get_timestamp()
@@ -765,12 +765,12 @@ class DeploymentPlanner:
         # Azure deployment names: max 64 chars
         safe_scenario = re.sub(r"[^a-zA-Z0-9-]", "", scenario_name)
 
-        name = f"neo4j-deploy-{safe_scenario}-{timestamp}"
+        name = f"bicep-deploy-{safe_scenario}-{timestamp}"
 
         # Truncate if too long (max 64 chars)
         if len(name) > 64:
-            max_scenario_len = 64 - len("neo4j-deploy-") - len(timestamp) - 1
+            max_scenario_len = 64 - len("bicep-deploy-") - len(timestamp) - 1
             safe_scenario = safe_scenario[:max_scenario_len]
-            name = f"neo4j-deploy-{safe_scenario}-{timestamp}"
+            name = f"bicep-deploy-{safe_scenario}-{timestamp}"
 
         return name

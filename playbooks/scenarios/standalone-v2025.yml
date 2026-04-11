@@ -1,0 +1,7 @@
+---
+# Standalone (single-node) Neo4j 2025 deployment
+node_count: 1
+vm_size: Standard_D2s_v5
+graph_database_version: "2025"
+license_type: Enterprise
+disk_size: 32

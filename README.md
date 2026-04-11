@@ -1,17 +1,25 @@
 # Neo4j Enterprise Edition - Azure Deployment Template
 
-Sample Azure Bicep templates for deploying Neo4j Enterprise Edition on Azure VM Scale Sets. This project provides a deployment solution with automated provisioning, cluster configuration, and enterprise authentication support. It includes a Python-based CLI tool for managing the full deployment lifecycle—from initial setup through validation and cleanup.
+Deployment tooling for Neo4j Enterprise Edition on Azure VM Scale Sets. Two deployment paths are available: a Bicep path using Azure Bicep templates backed by a `bicep-deploy` Python CLI, and an Ansible path using Ansible playbooks backed by an `ansible-deploy` CLI. Both paths support standalone (1 node) and cluster (3–10 nodes) topologies and share the same command interface — setup, deploy, test, status, and cleanup — covering the full deployment lifecycle.
+
+Three optional integration layers extend the base deployment:
+
+- **Private Databricks connectivity**: deploys an Azure Databricks workspace with VNet injection, connects it to the Neo4j cluster via Azure VNet peering, and scopes NSG rules so Bolt traffic travels only on the private network
+- **M2M bearer token authentication**: configures Neo4j's OIDC provider using either Keycloak (deployed to Azure Container Apps) or Microsoft Entra ID, enabling service-to-service connections without static credentials
+- **Databricks connectivity validation**: provisions a Databricks secrets scope and uploads a test notebook that validates TCP connectivity, Bolt authentication, and cluster topology in sequence
 
 > **Disclaimer:** This is a sample template provided as-is and is not officially supported. It requires full security hardening and review before use in any production environment.
 
 ## Features
 
+- **Two deployment paths**: Bicep path (`bicep-deploy`) using Azure Bicep templates; Ansible path (`ansible-deploy`) using Ansible playbooks — both share the same CLI interface
 - **Standalone or Cluster**: Deploy 1 node (standalone) or 3-10 nodes (cluster)
 - **Neo4j 2025.x**: Latest Neo4j Enterprise (2025.12+) with APOC plugin
-- **Load Balancer**: Automatic load balancer for clusters (3+ nodes)
+- **Load Balancer**: Automatic internal load balancer for clusters (3+ nodes)
 - **Cloud-init**: VM provisioning via cloud-init (no custom script extensions)
+- **Private Databricks connectivity**: Databricks workspace with VNet injection, connected to Neo4j via Azure VNet peering with NSG rules scoped to the Databricks container subnet
 - **Security**: NSG with proper port configuration, SSRF protection
-- **M2M Bearer Token Authentication**: OAuth 2.0 machine-to-machine authentication via Keycloak or Microsoft Entra ID for secure service-to-service connectivity
+- **M2M Bearer Token Authentication**: OAuth 2.0 machine-to-machine authentication via Keycloak or Microsoft Entra ID
 
 ## Prerequisites
 
@@ -20,133 +28,63 @@ Sample Azure Bicep templates for deploying Neo4j Enterprise Edition on Azure VM 
 - [uv](https://docs.astral.sh/uv/) package manager
 - Python 3.12+
 
-## Quick Start
+---
 
-```bash
-# Navigate to deployments directory
-cd deployments
+## Bicep Deployment
 
-# Install dependencies
-uv sync
+Python CLI (`bicep-deploy`) backed by Azure Bicep templates. Covers setup, deploy, test, status, and cleanup commands for standalone and cluster scenarios. Also supports optional Databricks VNet peering via a `peer-databricks-v2025` scenario.
 
-# Run interactive setup wizard
-uv run neo4j-deploy setup
+See [docs/bicep.md](docs/bicep.md) for full details.
 
-# Deploy standalone Neo4j
-uv run neo4j-deploy deploy --scenario standalone-v2025
+### Testing Databricks Connectivity
 
-# Deploy 3-node cluster
-uv run neo4j-deploy deploy --scenario cluster-v2025
+After deploying the `peer-databricks-v2025` scenario, run `setup-databricks` to provision secrets and upload the connectivity test notebook.
 
-# Check deployment status
-uv run neo4j-deploy status
+See [docs/databricks-validate.md](docs/databricks-validate.md) for the full walkthrough.
 
-# Test the deployment
-uv run neo4j-deploy test
+---
 
-# Validate M2M bearer token authentication (if configured during setup)
-export NEO4J_CLIENT_SECRET="your-client-secret"
-cd ../validate-bearer-token
-uv run validate_bearer.py --scenario standalone-v2025
+## Ansible Deployment
 
-# Clean up resources
-cd ../deployments
-uv run neo4j-deploy cleanup --all --force
-```
+Ansible playbooks for deploying Neo4j on Azure VM Scale Sets. Supports standalone, cluster, and cluster-with-Databricks scenarios via a lightweight `ansible-deploy` CLI.
 
-> **Note:** The setup wizard includes optional M2M (Machine-to-Machine) bearer token authentication configuration via Keycloak or Microsoft Entra ID. See [M2M Bearer Token Authentication](#m2m-bearer-token-authentication) for details.
+See [docs/ansible.md](docs/ansible.md) for full details.
 
-## Commands
+### Testing Databricks Connectivity
 
-| Command | Description |
-|---------|-------------|
-| `setup` | Interactive setup wizard for configuration |
-| `validate` | Validate Bicep templates without deploying |
-| `deploy` | Deploy one or more scenarios to Azure |
-| `test` | Test deployment connectivity and license |
-| `status` | Show deployment status |
-| `cleanup` | Delete Azure resources |
-| `report` | Generate test report for deployments |
+After deploying the `peer-databricks-v2025` scenario, run `setup-databricks` to provision secrets and upload the connectivity test notebook.
 
-## Configuration
+See [docs/databricks-validate.md](docs/databricks-validate.md) for the full walkthrough.
 
-After running `uv run neo4j-deploy setup`, configuration files are created in `deployments/.arm-testing/config/`:
+---
 
-- `settings.yaml` - Main settings (Azure subscription, regions, cleanup modes)
-- `scenarios.yaml` - Test scenario definitions
+## Databricks Deployment
 
-### Default Scenarios
+The `peer-databricks-v2025` scenario extends the base cluster deployment to include an Azure Databricks workspace with VNet injection and private connectivity to Neo4j. Both the Bicep and Ansible CLIs support this scenario.
 
-The setup wizard creates two default scenarios:
+The deployment provisions two resource groups: one for the 3-node Neo4j cluster (VNet, NSG, internal load balancer, VMSS) and one for Databricks (NAT gateway, delegated VNet, workspace). After both are provisioned, VNet peering is established in both directions and the Neo4j NSG rules are replaced with Databricks-scoped rules — the only inbound path to Neo4j ports is from the Databricks container subnet.
 
-1. **standalone-v2025** - Single-node Neo4j 2025 deployment
-2. **cluster-v2025** - 3-node Neo4j 2025 cluster
+See [databricks-docs/p2p-architecture.md](databricks-docs/p2p-architecture.md) for architecture details and [databricks-docs/p2p-access-guide.md](databricks-docs/p2p-access-guide.md) for the deployment walkthrough.
 
-You can modify `scenarios.yaml` to add custom scenarios.
+---
 
-## Template Parameters
+## M2M Bearer Token Authentication
 
-| Parameter | Description | Default |
-|-----------|-------------|---------|
-| `adminUsername` | SSH username | `neo4j` |
-| `adminPassword` | Neo4j admin password | (required) |
-| `vmSize` | Azure VM size | `Standard_D2s_v5` |
-| `nodeCount` | Number of nodes (1, 3-10) | `1` |
-| `diskSize` | Data disk size in GB | `32` |
-| `graphDatabaseVersion` | Neo4j version | `2025` |
-| `licenseType` | `Enterprise` or `Evaluation` | `Evaluation` |
-| `location` | Azure region | Resource group location |
+Optional OAuth 2.0 machine-to-machine authentication configured during the setup wizard. Supports Keycloak (deployed to Azure Container Apps) and Microsoft Entra ID. When enabled, the OIDC configuration is injected into Neo4j via cloud-init.
 
-> **Note:** Neo4j 2025.x requires Java 21 or later. The VM image includes the required Java version.
+See [docs/m2m.md](docs/m2m.md) for full details.
 
-## Environment Variables
-
-Configure these in your `.env` file:
-
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `NEO4J_ADMIN_PASSWORD` | Neo4j admin password | Auto-generated |
-| `AZURE_LOCATION` | Azure region | `eastus` |
-| `NEO4J_NODE_COUNT` | Number of nodes (1, 3-10) | `1` |
-| `NEO4J_VM_SIZE` | Azure VM size | `Standard_D2s_v5` |
-| `NEO4J_DISK_SIZE` | Data disk size in GB | `32` |
-| `NEO4J_VERSION` | Neo4j version | `2025` |
-| `NEO4J_LICENSE_TYPE` | `Enterprise` or `Evaluation` | `Evaluation` |
-
-## Cleanup Modes
-
-| Mode | Description |
-|------|-------------|
-| `immediate` | Delete resources immediately after deployment |
-| `on-success` | Delete only if tests pass (keep failures for debugging) |
-| `manual` | Never auto-delete (requires explicit cleanup) |
-| `scheduled` | Tag resources to expire after N hours |
-
-## Password Management
-
-Three password strategies are available:
-
-1. **Generate** (default) - Random secure password per deployment
-2. **Environment** - Read from `NEO4J_ADMIN_PASSWORD` environment variable
-3. **Prompt** - Interactive prompt each time
-
-## Ports
-
-| Port | Protocol | Description |
-|------|----------|-------------|
-| 22 | TCP | SSH |
-| 7473 | TCP | HTTPS (Neo4j Browser) |
-| 7474 | TCP | HTTP (Neo4j Browser) |
-| 7687 | TCP | Bolt (Neo4j Driver) |
-| 7688 | TCP | Bolt Routing (Cluster) |
-| 6000 | TCP | Cluster Communication |
-| 7000 | TCP | Raft Consensus |
-
+---
 
 ## Project Structure
 
 ```
 azure-ee-template/
+├── docs/                       # Deployment and feature guides
+│   ├── bicep.md                # Bicep CLI reference
+│   ├── ansible.md              # Ansible playbooks reference
+│   ├── databricks-validate.md  # Databricks connectivity testing
+│   └── m2m.md                  # M2M bearer token authentication
 ├── infra/                      # Azure infrastructure (Bicep templates)
 │   ├── main.bicep              # Main orchestrator template
 │   ├── modules/
@@ -159,10 +97,18 @@ azure-ee-template/
 │   │   └── cluster.yaml        # Multi-node cluster configuration
 │   ├── bicepconfig.json        # Bicep linter rules
 │   └── parameters.json         # Sample parameters
+├── notebooks/                  # Shared Databricks notebooks
+│   └── neo4j_connectivity_test.ipynb  # Connectivity test (used by both CLIs)
 ├── deployments/                # Deployment CLI (Python/Typer)
-│   ├── neo4j_deploy.py         # Main CLI entry point
+│   ├── bicep_deploy.py         # Bicep CLI entry point
+│   ├── ansible_deploy.py       # Ansible CLI entry point
 │   ├── pyproject.toml          # Package configuration
 │   └── src/                    # Source modules
+│       └── databricks_setup.py # Shared Databricks secrets + notebook upload
+├── playbooks/                  # Ansible playbooks and scenario files
+│   ├── neo4j.yml               # Neo4j deployment playbook
+│   ├── databricks.yml          # Databricks deployment playbook
+│   └── scenarios/              # Per-scenario variable files
 ├── keycloak-infra/             # Keycloak on Azure Container Apps
 │   ├── deploy.sh               # Deploy/status/test/cleanup script
 │   ├── main.bicep              # Bicep orchestrator for Keycloak
@@ -182,100 +128,6 @@ azure-ee-template/
 │   └── p2p-setup-questions.md  # Customer pre-engagement questions
 └── .deployments/               # Saved deployment details (gitignored)
 ```
-
-## Outputs
-
-After deployment, you'll receive:
-
-- `Neo4jBrowserURL`: URL to access Neo4j Browser
-- `Neo4jClusterBrowserURL`: Load balancer URL (clusters only)
-- `Username`: Default username (`neo4j`)
-
-## M2M Bearer Token Authentication
-
-The setup wizard includes an optional step to configure M2M (Machine-to-Machine) authentication. This allows services, APIs, and automated processes to connect to Neo4j using OAuth 2.0 bearer tokens. Two OIDC providers are supported:
-
-- **Keycloak** — Deploy Keycloak to Azure Container Apps, then the wizard reads OIDC values from the Keycloak deployment automatically
-- **Microsoft Entra ID** — Create app registrations via Azure CLI (automatic) or enter values manually
-
-During setup, the wizard presents three options:
-
-1. No M2M authentication
-2. Keycloak (reads from `keycloak-infra/.deployment.json`)
-3. Entra ID (automatic or manual Azure AD app registration)
-
-### Keycloak Setup
-
-Deploy Keycloak first, then run the Neo4j deployment wizard:
-
-```bash
-# Deploy Keycloak to Azure Container Apps
-cd keycloak-infra
-./deploy.sh deploy
-
-# Verify Keycloak is running and tokens work
-./deploy.sh test
-
-# Run Neo4j setup — select "Keycloak" at the M2M step
-cd ../deployments
-uv run neo4j-deploy setup
-
-# Deploy Neo4j (OIDC config is injected into neo4j.conf via cloud-init)
-uv run neo4j-deploy deploy --scenario standalone-v2025
-```
-
-The wizard reads `keycloak-infra/.deployment.json` and configures the OIDC provider, discovery URI, audience, role mapping, and client credentials automatically.
-
-See [keycloak-infra/README.md](keycloak-infra/README.md) for Keycloak deployment details.
-
-### Entra ID Setup
-
-The wizard uses Azure CLI (`az`) commands to:
-
-1. Detect your Azure tenant from your current `az login` session
-2. Create an API app registration with Neo4j roles (`Neo4j.Admin`, `Neo4j.ReadWrite`, `Neo4j.ReadOnly`)
-3. Create a client app registration and generate a client secret
-4. Grant API permissions and assign roles
-
-### Validating Bearer Token Authentication
-
-**Python (both providers):**
-
-```bash
-cd validate-bearer-token
-uv run validate_bearer.py --scenario standalone-v2025
-```
-
-The script detects the provider type from `.deployments/standalone-v2025.json` and acquires a token from the correct endpoint.
-
-**Java JDBC (Keycloak):**
-
-```bash
-cd oauth-java
-./run.sh
-```
-
-The script reads deployment info, acquires a Keycloak token, and connects to Neo4j using the [Neo4j JDBC driver](https://github.com/neo4j/neo4j-jdbc) with `authScheme=bearer`. It verifies the connection and displays the OIDC-mapped roles.
-
-## Databricks Integration
-
-The `databricks-docs/` directory covers private connectivity between a Databricks workspace and a deployed Neo4j instance over Azure VNet peering. All traffic travels over the Microsoft network backbone with no public exposure for database ports or cluster nodes.
-
-| Document | Description |
-|----------|-------------|
-| [Architecture](databricks-docs/p2p-architecture.md) | How the private path is designed, what each component does, and what cannot be changed after deployment |
-| [Deployment and Access Guide](databricks-docs/p2p-access-guide.md) | Step-by-step guide to deploy, verify, and test connectivity from a Databricks notebook |
-| [Customer Setup Questions](databricks-docs/p2p-setup-questions.md) | Pre-engagement questions to confirm whether VNet injection and peering are feasible |
-
-The integration requires two scenarios deployed in sequence: `standalone-v2025` deploys Neo4j and saves the VNet and NSG resource IDs, and `peer-databricks-v2025` reads those IDs to deploy the Databricks workspace, VNet, NAT gateway, and peering connections.
-
-```bash
-cd deployments
-uv run neo4j-deploy deploy --scenario standalone-v2025
-uv run neo4j-deploy deploy --scenario peer-databricks-v2025
-```
-
-See [databricks-docs/p2p-access-guide.md](databricks-docs/p2p-access-guide.md) for the full walkthrough, including peering verification, NSG confirmation, and a connectivity test from a Databricks notebook.
 
 ## License
 

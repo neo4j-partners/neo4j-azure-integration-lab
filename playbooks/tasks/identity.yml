@@ -1,0 +1,17 @@
+---
+- name: Create user-assigned managed identity
+  azure.azcollection.azure_rm_resource:
+    resource_group: "{{ resource_group }}"
+    provider: ManagedIdentity
+    resource_type: userAssignedIdentities
+    resource_name: "{{ identity_name }}"
+    api_version: "2024-11-30"
+    idempotency: true
+    body:
+      location: "{{ location }}"
+  register: identity_result
+
+- name: Register identity facts
+  ansible.builtin.set_fact:
+    neo4j_identity_id: "{{ identity_result.response.id }}"
+    neo4j_identity_principal_id: "{{ identity_result.response.properties.principalId }}"

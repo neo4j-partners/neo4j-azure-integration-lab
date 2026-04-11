@@ -28,7 +28,7 @@ DEFAULT_REGIONS: Final[list[str]] = [
 
 # Resource naming patterns
 RESOURCE_GROUP_PREFIX: Final[str] = "neo4j-test"
-DEPLOYMENT_PREFIX: Final[str] = "neo4j-deploy"
+DEPLOYMENT_PREFIX: Final[str] = "bicep-deploy"
 
 # Default VM sizes for cost-effective testing
 DEFAULT_VM_SIZES: Final[dict[str, str]] = {
@@ -54,8 +54,8 @@ DEFAULT_DEPLOYMENT_TIMEOUT: Final[int] = 1800  # 30 minutes
 
 # Azure resource tags
 RESOURCE_TAGS: Final[dict[str, str]] = {
-    "purpose": "neo4j-deployment",
-    "managed-by": "neo4j-deploy",
+    "purpose": "bicep-deployment",
+    "managed-by": "bicep-deploy",
 }
 
 # Timestamp format

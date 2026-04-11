@@ -5,6 +5,7 @@ Neo4j Azure Deployment Tools
 Main entry point for the deployment and testing framework.
 """
 
+import json
 import sys
 from pathlib import Path
 from typing import Optional
@@ -18,47 +19,120 @@ sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 from src.config import ConfigManager
 from src.setup import SetupWizard
+from src.utils import find_deployment_file
 
-# Project root .deployments directory for deployment details
+# Project root directories
 DEPLOYMENTS_DIR = Path(__file__).parent.parent / ".deployments"
+NOTEBOOKS_DIR = Path(__file__).parent.parent / "notebooks"
 
 
-def save_deployment_details(conn_info, deployment_state, settings=None) -> Path:
+def save_deployment_details(
+    conn_info,
+    deployment_state,
+    settings=None,
+    source_scenario: Optional[str] = None,
+) -> Path:
     """
-    Save deployment details to .deployments/ directory for easy access.
+    Save deployment details to .deployments/{scenario}-bicep.json.
 
-    Creates a JSON file with all connection info including credentials and M2M auth.
+    For Databricks peering scenarios the saved JSON is a complete, merged record
+    combining the Neo4j connection details from the source scenario with the
+    Databricks workspace URL from this deployment — matching the shape produced
+    by the Ansible CLI so that setup-databricks works the same way for both.
+
+    For Neo4j-only scenarios the schema also aligns with the Ansible output:
+    engine, state, neo4j_database, and lb_private_ip are all present in
+    connection so callers never need to know which engine ran the deployment.
     """
-    import json
-    from datetime import datetime
-
     DEPLOYMENTS_DIR.mkdir(exist_ok=True)
 
     outputs = conn_info.outputs or {}
 
-    # Databricks peering deployments have different output shape
     if outputs.get("databricksWorkspaceUrl"):
+        # --- Databricks peering scenario ---
+        workspace_url = outputs.get("databricksWorkspaceUrl", {}).get("value", "")
+        databricks_vnet_id = outputs.get("databricksVnetId", {}).get("value", "")
+
+        # Pull Neo4j connection details from the previously-saved source scenario JSON.
+        # The source scenario (e.g. cluster-v2025) has all the bolt URI / LB IP / password
+        # that Databricks needs; this deployment only adds the workspace URL on top.
+        source_conn: dict = {}
+        source_net: dict = {}
+        source_ssh: dict = {}
+        source_cfg: dict = {}
+        neo4j_rg = conn_info.resource_group
+
+        if source_scenario:
+            source_file = find_deployment_file(source_scenario, DEPLOYMENTS_DIR)
+            if source_file and source_file.exists():
+                with open(source_file) as f:
+                    source_data = json.load(f)
+                source_conn = source_data.get("connection", {})
+                source_net = source_data.get("network", {})
+                source_ssh = source_data.get("ssh", {})
+                source_cfg = source_data.get("configuration", {})
+                neo4j_rg = source_data.get("resource_group", conn_info.resource_group)
+
+        lb_ip = source_net.get("lb_private_ip") or source_conn.get("lb_private_ip", "")
+
+        databricks_rg = f"{neo4j_rg}-dbx"
         details = {
             "scenario": conn_info.scenario_name,
+            "engine": "bicep",
+            "state": "complete",
             "deployment_id": conn_info.deployment_id,
-            "resource_group": conn_info.resource_group,
+            "resource_group": neo4j_rg,
+            "neo4j_resource_group": neo4j_rg,
+            "databricks_resource_group": databricks_rg,
+            "databricks_managed_resource_group": f"{databricks_rg}-managed",
             "created_at": conn_info.created_at.isoformat(),
-            "databricks": {
-                "workspace_url": outputs.get("databricksWorkspaceUrl", {}).get("value", ""),
-                "vnet_id": outputs.get("databricksVnetId", {}).get("value", ""),
+            "connection": {
+                "neo4j_uri": source_conn.get("neo4j_uri", ""),
+                "browser_url": source_conn.get("browser_url", ""),
+                "username": source_conn.get("username", "neo4j"),
+                "password": source_conn.get("password", ""),
+                "neo4j_database": "neo4j",
+                "lb_private_ip": lb_ip,
+                "databricks_bolt_uri": f"bolt://{lb_ip}:7687" if lb_ip else "",
+                "databricks_workspace_url": f"https://{workspace_url}" if workspace_url else "",
+                "databricks_workspace_host": workspace_url,
+            },
+            "ssh": {
+                "hostname": source_ssh.get("hostname", ""),
+                "username": "neo4j",
+                "command": source_ssh.get("command", ""),
+            },
+            "configuration": {
+                "license_type": source_cfg.get("license_type", "Enterprise"),
+                "node_count": source_cfg.get("node_count", 3),
+            },
+            "network": {
+                "vnet_id": source_net.get("vnet_id", ""),
+                "nsg_id": source_net.get("nsg_id", ""),
+                "lb_private_ip": lb_ip,
+                "databricks_vnet_id": databricks_vnet_id,
             },
         }
+
     else:
+        # --- Neo4j-only scenario ---
+        lb_ip = outputs.get("lbPrivateIpAddress", {}).get("value", "")
+
         details = {
             "scenario": conn_info.scenario_name,
+            "engine": "bicep",
+            "state": "complete",
             "deployment_id": conn_info.deployment_id,
             "resource_group": conn_info.resource_group,
+            "neo4j_resource_group": conn_info.resource_group,
             "created_at": conn_info.created_at.isoformat(),
             "connection": {
                 "neo4j_uri": conn_info.neo4j_uri,
                 "browser_url": conn_info.browser_url,
                 "username": conn_info.username,
                 "password": conn_info.password,
+                "neo4j_database": "neo4j",
+                "lb_private_ip": lb_ip,
             },
             "ssh": {
                 "hostname": conn_info.ssh_hostname,
@@ -72,45 +146,44 @@ def save_deployment_details(conn_info, deployment_state, settings=None) -> Path:
             "network": {
                 "vnet_id": outputs.get("vnetId", {}).get("value", ""),
                 "nsg_id": outputs.get("nsgId", {}).get("value", ""),
+                "lb_private_ip": lb_ip,
             },
         }
 
-    if not outputs.get("databricksWorkspaceUrl"):
         if conn_info.bloom_url:
             details["connection"]["bloom_url"] = conn_info.bloom_url
 
-    # Add M2M authentication info if configured (Neo4j deployments only)
-    if not outputs.get("databricksWorkspaceUrl") and settings and settings.m2m and settings.m2m.enabled:
-        m2m = settings.m2m
-        if m2m.provider_type == "keycloak":
-            details["m2m_auth"] = {
-                "enabled": True,
-                "provider_type": "keycloak",
-                "discovery_uri": m2m.discovery_uri,
-                "token_endpoint": m2m.token_endpoint,
-                "audience": m2m.audience,
-                "client_id": m2m.client_id,
-                "client_secret": m2m.client_secret,
-                "role_mapping": m2m.role_mapping,
-                "display_name": m2m.display_name,
-            }
+        # M2M auth block
+        if settings and settings.m2m and settings.m2m.enabled:
+            m2m = settings.m2m
+            if m2m.provider_type == "keycloak":
+                details["m2m_auth"] = {
+                    "enabled": True,
+                    "provider_type": "keycloak",
+                    "discovery_uri": m2m.discovery_uri,
+                    "token_endpoint": m2m.token_endpoint,
+                    "audience": m2m.audience,
+                    "client_id": m2m.client_id,
+                    "client_secret": m2m.client_secret,
+                    "role_mapping": m2m.role_mapping,
+                    "display_name": m2m.display_name,
+                }
+            else:
+                details["m2m_auth"] = {
+                    "enabled": True,
+                    "provider_type": "entra",
+                    "tenant_id": m2m.tenant_id,
+                    "api_app_id": m2m.api_app_id,
+                    "audience": m2m.audience,
+                    "client_app_id": m2m.client_app_id,
+                    "token_endpoint": f"https://login.microsoftonline.com/{m2m.tenant_id}/oauth2/v2.0/token",
+                    "scope": f"{m2m.audience}/.default",
+                    "well_known_uri": f"https://login.microsoftonline.com/{m2m.tenant_id}/v2.0/.well-known/openid-configuration",
+                }
         else:
-            details["m2m_auth"] = {
-                "enabled": True,
-                "provider_type": "entra",
-                "tenant_id": m2m.tenant_id,
-                "api_app_id": m2m.api_app_id,
-                "audience": m2m.audience,
-                "client_app_id": m2m.client_app_id,
-                "token_endpoint": f"https://login.microsoftonline.com/{m2m.tenant_id}/oauth2/v2.0/token",
-                "scope": f"{m2m.audience}/.default",
-                "well_known_uri": f"https://login.microsoftonline.com/{m2m.tenant_id}/v2.0/.well-known/openid-configuration",
-            }
-    elif not outputs.get("databricksWorkspaceUrl"):
-        details["m2m_auth"] = {"enabled": False}
+            details["m2m_auth"] = {"enabled": False}
 
-    # Save with scenario name for easy identification
-    filename = f"{conn_info.scenario_name}.json"
+    filename = f"{conn_info.scenario_name}-bicep.json"
     file_path = DEPLOYMENTS_DIR / filename
 
     with open(file_path, "w") as f:
@@ -119,45 +192,61 @@ def save_deployment_details(conn_info, deployment_state, settings=None) -> Path:
     return file_path
 
 
-def display_connection_info(conn_info) -> None:
-    """Display connection information prominently after deployment."""
+def display_connection_info(details: dict, scenario_name: str) -> None:
+    """
+    Display connection information from a saved deployment JSON.
+
+    Handles both Neo4j-only and Databricks peering scenarios using the unified
+    JSON schema produced by save_deployment_details().
+    """
     from rich.panel import Panel
     from rich.table import Table
+
+    conn = details.get("connection", {})
+    ssh = details.get("ssh", {})
+    cfg = details.get("configuration", {})
 
     table = Table(show_header=False, box=None, padding=(0, 2))
     table.add_column("Label", style="cyan")
     table.add_column("Value", style="white")
 
-    table.add_row("Browser URL", conn_info.browser_url)
-    table.add_row("Neo4j URI", conn_info.neo4j_uri)
-    table.add_row("Username", conn_info.username)
-    table.add_row("Password", conn_info.password)
+    if conn.get("browser_url"):
+        table.add_row("Browser URL", conn["browser_url"])
+    if conn.get("neo4j_uri"):
+        table.add_row("Neo4j URI", conn["neo4j_uri"])
+    table.add_row("Username", conn.get("username", "neo4j"))
+    table.add_row("Password", conn.get("password", ""))
 
-    if conn_info.bloom_url:
-        table.add_row("Bloom URL", conn_info.bloom_url)
+    if conn.get("bloom_url"):
+        table.add_row("Bloom URL", conn["bloom_url"])
+    if conn.get("lb_private_ip"):
+        table.add_row("LB Private IP", conn["lb_private_ip"])
+    if conn.get("databricks_bolt_uri"):
+        table.add_row("Databricks Bolt URI", conn["databricks_bolt_uri"])
+    if conn.get("databricks_workspace_url"):
+        table.add_row("Databricks URL", conn["databricks_workspace_url"])
+    if ssh.get("command"):
+        table.add_row("SSH Command", ssh["command"])
 
-    if conn_info.ssh_command:
-        table.add_row("SSH Command", conn_info.ssh_command)
-
-    table.add_row("License", conn_info.license_type)
-    if conn_info.node_count and conn_info.node_count > 1:
-        table.add_row("Cluster Size", f"{conn_info.node_count} nodes")
+    if cfg.get("license_type"):
+        table.add_row("License", cfg["license_type"])
+    if cfg.get("node_count") and cfg["node_count"] > 1:
+        table.add_row("Cluster Size", f"{cfg['node_count']} nodes")
 
     panel = Panel(
         table,
-        title=f"[bold green]{conn_info.scenario_name} - Connection Details[/bold green]",
+        title=f"[bold green]{scenario_name} - Connection Details[/bold green]",
         border_style="green",
     )
     console.print(panel)
 
-    # Show file location
-    details_file = DEPLOYMENTS_DIR / f"{conn_info.scenario_name}.json"
+    details_file = DEPLOYMENTS_DIR / f"{scenario_name}-bicep.json"
     console.print(f"[dim]Saved to: {details_file}[/dim]\n")
 
 
 # Create Typer app
 app = typer.Typer(
-    name="neo4j-deploy",
+    name="bicep-deploy",
     help="Neo4j Azure Deployment Tools - Automated deployment and testing framework for Neo4j Enterprise on Azure",
     add_completion=False,
     rich_markup_mode="rich",
@@ -280,7 +369,7 @@ def validate(
         success = rg_manager.create_resource_group(
             validation_rg,
             settings.default_region,
-            tags={"purpose": "arm-template-validation", "managed-by": "neo4j-deploy"},
+            tags={"purpose": "arm-template-validation", "managed-by": "bicep-deploy"},
         )
         if not success:
             console.print(
@@ -387,10 +476,10 @@ def deploy(
     You must specify either --scenario or --all.
 
     Examples:
-        uv run neo4j-deploy deploy --all
-        uv run neo4j-deploy deploy --scenario standalone-v5
-        uv run neo4j-deploy deploy --scenario cluster-v5 --region eastus2
-        uv run neo4j-deploy deploy --all --dry-run
+        uv run bicep-deploy deploy --all
+        uv run bicep-deploy deploy --scenario standalone-v5
+        uv run bicep-deploy deploy --scenario cluster-v5 --region eastus2
+        uv run bicep-deploy deploy --all --dry-run
     """
     from rich.table import Table
 
@@ -413,8 +502,8 @@ def deploy(
         for s in scenarios.scenarios:
             console.print(f"  - {s.name}")
         console.print("\n[cyan]Examples:[/cyan]")
-        console.print("  uv run neo4j-deploy deploy --scenario standalone-v5")
-        console.print("  uv run neo4j-deploy deploy --all")
+        console.print("  uv run bicep-deploy deploy --scenario standalone-v5")
+        console.print("  uv run bicep-deploy deploy --all")
         raise typer.Exit(1)
 
     if scenario and all_scenarios:
@@ -655,11 +744,18 @@ def deploy(
                             state.scenario_name,
                         )
 
-                        # Also save to project root .deployments/ for easy access
-                        save_deployment_details(conn_info, state, settings)
+                        # Also save to project root .deployments/ for easy access.
+                        # Pass source_scenario so Databricks deployments get a fully
+                        # merged JSON with the Neo4j connection details from the
+                        # cluster deployment they peer with.
+                        src_scenario = scenario_obj.source_scenario if scenario_obj else None
+                        details_file = save_deployment_details(conn_info, state, settings, source_scenario=src_scenario)
 
-                        # Display connection info prominently
-                        display_connection_info(conn_info)
+                        # Display from the saved JSON so Databricks and Neo4j-only
+                        # scenarios both render consistently.
+                        with open(details_file) as _f:
+                            saved_details = json.load(_f)
+                        display_connection_info(saved_details, state.scenario_name)
 
                         # Auto-cleanup after successful deployment (if configured)
                         cleanup_manager.auto_cleanup_deployment(state, no_wait=True)
@@ -685,15 +781,15 @@ def deploy(
             if final_status == "Succeeded":
                 console.print(f"  - Validate {state.scenario_name}: [bold]uv run validate_deploy {state.scenario_name}[/bold]")
 
-        console.print("  - Check status: [bold]uv run neo4j-deploy status[/bold]")
+        console.print("  - Check status: [bold]uv run bicep-deploy status[/bold]")
 
         if cleanup == CleanupMode.MANUAL:
             console.print("\n[cyan]Clean up resources:[/cyan]")
             # Show example with first deployment ID
             if deployment_states:
                 example_id = deployment_states[0].deployment_id[:8]
-                console.print(f"  - Individual: [bold]uv run neo4j-deploy cleanup --deployment {example_id} --force[/bold]")
-            console.print(f"  - All: [bold]uv run neo4j-deploy cleanup --all --force[/bold]")
+                console.print(f"  - Individual: [bold]uv run bicep-deploy cleanup --deployment {example_id} --force[/bold]")
+            console.print(f"  - All: [bold]uv run bicep-deploy cleanup --all --force[/bold]")
         else:
             console.print(f"  - Cleanup mode: {cleanup.value} (auto-cleanup {'enabled' if cleanup != CleanupMode.MANUAL else 'disabled'})")
 
@@ -702,26 +798,28 @@ def deploy(
 
 
 @app.command()
-def test(
+def verify(
     deployment_id: Annotated[
         Optional[str],
-        typer.Argument(help="Deployment ID to test (defaults to most recent successful deployment)")
+        typer.Argument(help="Deployment ID to verify (defaults to most recent successful deployment)")
     ] = None,
 ) -> None:
     """
-    Test an existing deployment using validate_deploy.
+    Verify an existing deployment by running database-level checks.
 
-    Connects to the deployed Neo4j instance and runs validation tests:
-    - Creates test dataset
+    Connects to the deployed Neo4j instance via Bolt and:
+    - Creates a test dataset
     - Verifies database connectivity
     - Checks license type
     - Cleans up test data
 
-    If no deployment ID is provided, tests the most recent successful deployment.
+    For VNet and Databricks connectivity checks use: neo4j-connect check --scenario <name>
+
+    If no deployment ID is provided, verifies the most recent successful deployment.
 
     Examples:
-        uv run neo4j-deploy test                                       # Test most recent
-        uv run neo4j-deploy test d681f330-499d-4523-ba5b-42e28d2b7d12  # Test specific deployment
+        uv run bicep-deploy verify                                        # Verify most recent
+        uv run bicep-deploy verify d681f330-499d-4523-ba5b-42e28d2b7d12  # Verify specific deployment
     """
     from src.resource_groups import ResourceGroupManager
     from src.validate_deploy import validate_deployment
@@ -749,7 +847,7 @@ def test(
 
         if not successful_deployments:
             console.print("[red]Error: No successful deployments found.[/red]")
-            console.print("[yellow]Deploy first with: uv run neo4j-deploy deploy --scenario <scenario-name>[/yellow]")
+            console.print("[yellow]Deploy first with: uv run bicep-deploy deploy --scenario <scenario-name>[/yellow]")
             raise typer.Exit(1)
 
         # Sort by created_at (most recent first)
@@ -758,14 +856,14 @@ def test(
 
         console.print(f"[dim]Using most recent successful deployment: {deployment_id}[/dim]\n")
 
-    console.print(f"[cyan]Testing deployment: {deployment_id}[/cyan]\n")
+    console.print(f"[cyan]Verifying deployment: {deployment_id}[/cyan]\n")
 
     # Get deployment state
     deployment_state = rg_manager.get_deployment_state(deployment_id)
 
     if not deployment_state:
         console.print(f"[red]Error: Deployment {deployment_id} not found[/red]")
-        console.print("[yellow]Run 'uv run neo4j-deploy status' to see available deployments[/yellow]")
+        console.print("[yellow]Run 'uv run bicep-deploy status' to see available deployments[/yellow]")
         raise typer.Exit(1)
 
     console.print(f"[dim]Scenario: {deployment_state.scenario_name}[/dim]")
@@ -845,7 +943,7 @@ def status(
     if not deployments:
         console.print("[yellow]No deployments found[/yellow]")
         console.print("\n[cyan]Deploy a scenario:[/cyan]")
-        console.print("  uv run neo4j-deploy deploy --scenario standalone-v5")
+        console.print("  uv run bicep-deploy deploy --scenario standalone-v5")
         raise typer.Exit(0)
 
     # Filter out deleted deployments unless verbose
@@ -926,8 +1024,8 @@ def status(
     if active_count > 0:
         console.print(f"[cyan]Active deployments:[/cyan] {active_count}")
         console.print("\n[dim]To clean up:[/dim]")
-        console.print("  uv run neo4j-deploy cleanup --deployment <id> --force")
-        console.print("  uv run neo4j-deploy cleanup --all --force")
+        console.print("  uv run bicep-deploy cleanup --deployment <id> --force")
+        console.print("  uv run bicep-deploy cleanup --all --force")
 
 
 @app.command()
@@ -963,10 +1061,10 @@ def cleanup(
     - scheduled: Delete when expiration time is reached
 
     Examples:
-        uv run neo4j-deploy cleanup --deployment 2c4ca18c --force
-        uv run neo4j-deploy cleanup --all --force
-        uv run neo4j-deploy cleanup --older-than 24h
-        uv run neo4j-deploy cleanup --all --dry-run
+        uv run bicep-deploy cleanup --deployment 2c4ca18c --force
+        uv run bicep-deploy cleanup --all --force
+        uv run bicep-deploy cleanup --older-than 24h
+        uv run bicep-deploy cleanup --all --dry-run
     """
     from src.cleanup import CleanupManager
     from src.resource_groups import ResourceGroupManager
@@ -976,9 +1074,9 @@ def cleanup(
     if not deployment and not all_deployments and not older_than:
         console.print("[red]Error: Must specify --deployment, --all, or --older-than[/red]")
         console.print("\n[cyan]Examples:[/cyan]")
-        console.print("  uv run neo4j-deploy cleanup --deployment 2c4ca18c --force")
-        console.print("  uv run neo4j-deploy cleanup --all --force")
-        console.print("  uv run neo4j-deploy cleanup --older-than 24h")
+        console.print("  uv run bicep-deploy cleanup --deployment 2c4ca18c --force")
+        console.print("  uv run bicep-deploy cleanup --all --force")
+        console.print("  uv run bicep-deploy cleanup --older-than 24h")
         raise typer.Exit(1)
 
     # Initialize components
@@ -1004,7 +1102,7 @@ def cleanup(
 
         if not matching:
             console.print(f"[red]Error: No deployment found matching '{deployment}'[/red]")
-            console.print("[yellow]Run 'uv run neo4j-deploy status' to see available deployments[/yellow]")
+            console.print("[yellow]Run 'uv run bicep-deploy status' to see available deployments[/yellow]")
             raise typer.Exit(1)
 
         if len(matching) > 1:
@@ -1053,6 +1151,124 @@ def cleanup(
         raise typer.Exit(1)
 
 
+@app.command("setup-databricks")
+def setup_databricks(
+    scenario: Annotated[
+        str,
+        typer.Option("--scenario", "-s", help="Scenario name (must have a complete deployment JSON)"),
+    ],
+    token: Annotated[
+        Optional[str],
+        typer.Option("--token", "-t", help="Databricks personal access token (PAT)"),
+    ] = None,
+    profile: Annotated[
+        Optional[str],
+        typer.Option("--profile", "-p", help="Databricks CLI profile from ~/.databrickscfg"),
+    ] = None,
+    notebook_path: Annotated[
+        Optional[str],
+        typer.Option(
+            "--notebook-path",
+            help="Workspace path to upload the notebook (default: /Shared/neo4j-{scenario}-connectivity-test)",
+        ),
+    ] = None,
+) -> None:
+    """
+    Create Databricks secrets and upload the connectivity test notebook for a Neo4j deployment.
+
+    Reads .deployments/{scenario}-{engine}.json and:
+    - Creates a secrets scope named neo4j-{scenario}
+    - Uploads 5 secrets: bolt_uri, host, username, password, database
+    - Uploads the connectivity test notebook to the Databricks workspace
+
+    Auth options (one required):
+      --token <pat>     Personal access token — generate in Databricks UI under
+                        User Settings > Developer > Access tokens
+      --profile <name>  Named profile from ~/.databrickscfg
+    """
+    from rich.panel import Panel
+    from rich.table import Table
+
+    details_file = find_deployment_file(scenario, DEPLOYMENTS_DIR)
+    if not details_file:
+        console.print(f"[red]No deployment found for scenario: {scenario}[/red]")
+        console.print(f"[dim]Run: uv run bicep-deploy deploy --scenario {scenario}[/dim]")
+        raise typer.Exit(1)
+
+    with open(details_file) as f:
+        details = json.load(f)
+
+    if details.get("state") != "complete":
+        console.print("[red]Deployment is not in a complete state. Re-deploy or check the JSON.[/red]")
+        raise typer.Exit(1)
+
+    conn = details.get("connection", {})
+    bolt_uri = conn.get("databricks_bolt_uri")
+    workspace_host = conn.get("databricks_workspace_host")
+
+    if not bolt_uri:
+        console.print(
+            "[red]No databricks_bolt_uri in deployment JSON.[/red]\n"
+            "[dim]This field is only present for peered-cluster scenarios with a load balancer.\n"
+            "Re-deploy to regenerate the JSON with the required fields.[/dim]"
+        )
+        raise typer.Exit(1)
+
+    if not workspace_host:
+        console.print("[red]No databricks_workspace_host in deployment JSON.[/red]")
+        raise typer.Exit(1)
+
+    if not token and not profile:
+        console.print(
+            "[red]Provide --token or --profile for Databricks authentication.[/red]\n"
+            "[dim]Generate a PAT: Databricks workspace → User Settings → Developer → Access tokens[/dim]"
+        )
+        raise typer.Exit(1)
+
+    try:
+        from databricks.sdk import WorkspaceClient
+    except ImportError:
+        console.print("[red]databricks-sdk not installed. Run: uv sync[/red]")
+        raise typer.Exit(1)
+
+    console.print(f"\n[bold]Connecting to:[/bold] https://{workspace_host}")
+    if token:
+        client = WorkspaceClient(host=workspace_host, token=token)
+    else:
+        client = WorkspaceClient(profile=profile)
+
+    scope_name = f"neo4j-{scenario}"
+    if notebook_path is None:
+        notebook_path = f"/Shared/neo4j-{scenario}-connectivity-test"
+
+    try:
+        from src.databricks_setup import run_databricks_setup
+        run_databricks_setup(
+            workspace_host=workspace_host,
+            bolt_uri=bolt_uri,
+            username=conn.get("username", "neo4j"),
+            password=conn.get("password", ""),
+            database=conn.get("neo4j_database", "neo4j"),
+            scope_name=scope_name,
+            notebook_path=notebook_path,
+            client=client,
+        )
+    except Exception as e:
+        console.print(f"[red]Setup failed: {e}[/red]")
+        raise typer.Exit(1)
+
+    workspace_url = conn.get("databricks_workspace_url", f"https://{workspace_host}")
+    table = Table(show_header=False, box=None, padding=(0, 2))
+    table.add_column("Label", style="cyan")
+    table.add_column("Value", style="white")
+    table.add_row("Secrets scope", scope_name)
+    table.add_row("Notebook path", notebook_path)
+    table.add_row("Workspace", workspace_url)
+    console.print(
+        Panel(table, title="[bold green]Databricks Setup Complete[/bold green]", border_style="green")
+    )
+
+
 @app.command()
 def report(
     deployment_id: Annotated[
@@ -1074,9 +1290,9 @@ def report(
     If no deployment_id specified, generates a summary report of all deployments.
 
     Examples:
-        uv run neo4j-deploy report
-        uv run neo4j-deploy report abc123
-        uv run neo4j-deploy report --format json --output report.json
+        uv run bicep-deploy report
+        uv run bicep-deploy report abc123
+        uv run bicep-deploy report --format json --output report.json
     """
     check_initialized()
     console.print("[yellow]Report command not yet implemented[/yellow]")

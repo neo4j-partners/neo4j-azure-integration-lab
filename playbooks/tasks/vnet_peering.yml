@@ -1,0 +1,52 @@
+---
+- name: Extract Neo4j VNet name from resource ID
+  ansible.builtin.set_fact:
+    neo4j_vnet_name: "{{ neo4j_vnet_id.split('/')[-1] }}"
+
+- name: Create VNet peering - Databricks to Neo4j
+  azure.azcollection.azure_rm_virtualnetworkpeering:
+    resource_group: "{{ databricks_resource_group }}"
+    name: dbx-to-neo4j
+    virtual_network: "{{ dbx_vnet_name }}"
+    remote_virtual_network: "{{ neo4j_vnet_id }}"
+    allow_virtual_network_access: true
+    allow_forwarded_traffic: false
+    allow_gateway_transit: false
+    use_remote_gateways: false
+    state: present
+
+- name: Create VNet peering - Neo4j to Databricks
+  azure.azcollection.azure_rm_virtualnetworkpeering:
+    resource_group: "{{ neo4j_resource_group }}"
+    name: neo4j-to-dbx
+    virtual_network: "{{ neo4j_vnet_name }}"
+    remote_virtual_network: "{{ dbx_vnet_id }}"
+    allow_virtual_network_access: true
+    allow_forwarded_traffic: false
+    allow_gateway_transit: false
+    use_remote_gateways: false
+    state: present
+
+- name: Wait for Databricks-to-Neo4j peering to reach Connected state
+  azure.azcollection.azure_rm_resource_info:
+    resource_group: "{{ databricks_resource_group }}"
+    provider: Network
+    resource_type: "virtualNetworks/{{ dbx_vnet_name }}/virtualNetworkPeerings"
+    resource_name: dbx-to-neo4j
+    api_version: "2024-05-01"
+  register: dbx_peering_status
+  until: dbx_peering_status.response[0].properties.peeringState == 'Connected'
+  retries: 30
+  delay: 10
+
+- name: Wait for Neo4j-to-Databricks peering to reach Connected state
+  azure.azcollection.azure_rm_resource_info:
+    resource_group: "{{ neo4j_resource_group }}"
+    provider: Network
+    resource_type: "virtualNetworks/{{ neo4j_vnet_name }}/virtualNetworkPeerings"
+    resource_name: neo4j-to-dbx
+    api_version: "2024-05-01"
+  register: neo4j_peering_status
+  until: neo4j_peering_status.response[0].properties.peeringState == 'Connected'
+  retries: 30
+  delay: 10

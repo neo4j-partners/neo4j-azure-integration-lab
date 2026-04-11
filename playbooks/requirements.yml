@@ -1,0 +1,7 @@
+---
+# Install with: ansible-galaxy collection install -r playbooks/requirements.yml
+# After installing, also run:
+#   pip install -r ~/.ansible/collections/ansible_collections/azure/azcollection/requirements.txt
+collections:
+  - name: azure.azcollection
+    version: ">=3.16.0"

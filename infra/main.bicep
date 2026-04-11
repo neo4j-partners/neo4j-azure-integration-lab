@@ -62,6 +62,7 @@ module loadbalancer 'modules/loadbalancer.bicep' = {
     location: location
     resourceSuffix: resourceSuffix
     loadBalancerCondition: loadBalancerCondition
+    subnetId: network.outputs.subnetId
   }
 }
 
@@ -111,12 +112,11 @@ output subnetId string = network.outputs.subnetId
 output nsgId string = network.outputs.nsgId
 output identityId string = identity.outputs.identityId
 output loadBalancerBackendAddressPools array = loadbalancer.outputs.loadBalancerBackendAddressPools
-output publicIpAddress string = loadbalancer.outputs.publicIpAddress
+output lbPrivateIpAddress string = loadBalancerCondition ? loadbalancer.outputs.privateIpAddress : ''
 output vmScaleSetsId string = vmss.outputs.vmScaleSetsId
 output vmScaleSetsName string = vmss.outputs.vmScaleSetsName
 
 output Neo4jBrowserURL string = uri('http://vm0.neo4j-${deploymentUniqueId}.${location}.cloudapp.azure.com:7474', '')
-output Neo4jClusterBrowserURL string = loadBalancerCondition ? uri('http://${loadbalancer.outputs.publicIpFqdn}:7474', '') : ''
 output Username string = 'neo4j'
 
 // SSH access information

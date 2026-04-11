@@ -46,6 +46,23 @@ def run_command(
     )
 
 
+def find_deployment_file(scenario: str, deployments_dir: Path) -> Path | None:
+    """
+    Find the deployment JSON for a scenario.
+
+    Checks {scenario}-bicep.json and {scenario}-ansible.json. Returns the
+    most recently modified match when both exist, or None if neither is found.
+    """
+    candidates = [
+        deployments_dir / f"{scenario}-bicep.json",
+        deployments_dir / f"{scenario}-ansible.json",
+    ]
+    existing = [p for p in candidates if p.exists()]
+    if existing:
+        return max(existing, key=lambda p: p.stat().st_mtime)
+    return None
+
+
 def get_git_branch() -> Optional[str]:
     """
     Get the current Git branch name.
