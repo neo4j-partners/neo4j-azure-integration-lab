@@ -16,6 +16,8 @@ uv sync                                          # Install dependencies
 uv run bicep-deploy setup                        # Interactive configuration wizard
 uv run bicep-deploy deploy --scenario standalone-v2025    # Deploy standalone
 uv run bicep-deploy deploy --scenario cluster-v2025       # Deploy 3-node cluster
+uv run bicep-deploy setup-databricks --scenario peer-databricks-v2025  # Databricks secrets + notebook
+uv run bicep-deploy setup-ncc --scenario peer-databricks-v2025        # NCC + Private Link (serverless)
 uv run bicep-deploy status                       # Check deployment status
 uv run bicep-deploy test                         # Test most recent deployment
 uv run bicep-deploy cleanup --all --force        # Delete all resources

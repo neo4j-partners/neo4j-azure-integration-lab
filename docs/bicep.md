@@ -58,6 +58,9 @@ uv run bicep-deploy deploy --scenario peer-databricks-v2025
 # Create Databricks secrets scope and upload connectivity test notebook
 uv run bicep-deploy setup-databricks --scenario peer-databricks-v2025
 
+# Create NCC + Private Link Service endpoint for serverless compute connectivity
+uv run bicep-deploy setup-ncc --scenario peer-databricks-v2025
+
 # Run automated connectivity checks (VNet-internal + cross-VNet from Databricks)
 uv run neo4j-connect check --scenario peer-databricks-v2025
 # See docs/testing.md for the full reference
@@ -78,6 +81,7 @@ uv run bicep-deploy cleanup --all --force
 | `verify` | Verify database connectivity and license via Bolt |
 | `status` | Show deployment status |
 | `setup-databricks` | Create Databricks secrets scope and upload connectivity test notebook |
+| `setup-ncc` | Create Databricks NCC and Private Link Service endpoint for serverless compute |
 | `cleanup` | Delete Azure resources |
 | `report` | Generate test report for deployments |
 

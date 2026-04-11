@@ -4,7 +4,7 @@ Deployment tooling for Neo4j Enterprise Edition on Azure VM Scale Sets. Two depl
 
 Three optional integration layers extend the base deployment:
 
-- **Private Databricks connectivity**: deploys an Azure Databricks workspace with VNet injection, connects it to the Neo4j cluster via Azure VNet peering, and scopes NSG rules so Bolt traffic travels only on the private network
+- **Private Databricks connectivity**: deploys an Azure Databricks workspace with VNet injection, connects it to the Neo4j cluster via Azure VNet peering (job clusters) and Azure Private Link (serverless notebooks), and scopes NSG rules so Bolt traffic travels only on the private network
 - **M2M bearer token authentication**: configures Neo4j's OIDC provider using either Keycloak (deployed to Azure Container Apps) or Microsoft Entra ID, enabling service-to-service connections without static credentials
 - **Databricks connectivity validation**: provisions a Databricks secrets scope and uploads a test notebook that validates TCP connectivity, Bolt authentication, and cluster topology in sequence
 
@@ -38,9 +38,12 @@ See [docs/bicep.md](docs/bicep.md) for full details.
 
 ### Testing Databricks Connectivity
 
-After deploying the `peer-databricks-v2025` scenario, run `setup-databricks` to provision secrets and upload the connectivity test notebook.
+After deploying the `peer-databricks-v2025` scenario:
 
-See [docs/databricks-validate.md](docs/databricks-validate.md) for the full walkthrough.
+- Run `setup-databricks` to provision secrets and upload the connectivity test notebook (VNet-injected job cluster path).
+- Run `setup-ncc` to configure the Databricks NCC and Azure Private Link endpoint (serverless notebook path).
+
+See [docs/databricks-validate.md](docs/databricks-validate.md) for the full walkthrough of both paths.
 
 ---
 

@@ -70,7 +70,39 @@ cat .deployments/peer-databricks-v2025-bicep.json | python3 -c "import json,sys;
 
 ---
 
-## Step 2: Verify the Deployment
+## Step 2: Post-Deployment Setup
+
+### Databricks secrets and connectivity notebook
+
+Run `setup-databricks` to create the secrets scope and upload the connectivity test notebook to the workspace. This is used by **VNet-injected job clusters**.
+
+```bash
+cd deployments
+uv run $CLI setup-databricks --scenario peer-databricks-v2025 --token <pat>
+```
+
+See [docs/databricks-validate.md](../docs/databricks-validate.md) for the full notebook walkthrough.
+
+### Private Link for serverless notebooks (Bicep path only)
+
+Run `setup-ncc` to create the Databricks Network Connectivity Configuration and the Private Link Service endpoint. This is the connectivity path for **serverless notebooks**, which run outside the injected VNet and cannot use VNet peering.
+
+```bash
+cd deployments
+uv run bicep-deploy setup-ncc --scenario peer-databricks-v2025
+```
+
+This command creates an NCC named `neo4j-ncc`, attaches it to the workspace, creates a private endpoint rule pointing at the `pls-neo4j` Private Link Service, and approves the resulting endpoint connection — all from the current `az login` session. When it completes it prints the bolt URI to use from serverless notebooks:
+
+```
+bolt://neo4j.private:7687
+```
+
+See [docs/databricks-validate.md](../docs/databricks-validate.md#serverless-compute-connectivity-private-link) for the notebook snippet.
+
+---
+
+## Step 3: Verify the Deployment
 
 ### Peering status
 

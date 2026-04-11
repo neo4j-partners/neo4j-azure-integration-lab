@@ -83,3 +83,62 @@ uv run neo4j-connect check --scenario peer-databricks-v2025
 ```
 
 See [testing.md](testing.md) for the full reference.
+
+---
+
+## Serverless Compute Connectivity (Private Link)
+
+VNet-injected job clusters connect to Neo4j via VNet peering. Serverless notebooks take a different network path — they run outside the injected VNet and require a separate private channel. `setup-ncc` provisions that channel using Azure Private Link.
+
+### Run the command
+
+```bash
+cd deployments
+
+uv run bicep-deploy setup-ncc --scenario peer-databricks-v2025
+```
+
+This single command:
+
+1. Creates (or reuses) a Databricks Network Connectivity Configuration (NCC) named `neo4j-ncc` in the workspace region
+2. Attaches the NCC to the workspace
+3. Creates a private endpoint rule pointing at the `pls-neo4j` Private Link Service on the Neo4j load balancer
+4. Polls for the Pending endpoint connection on the Azure PLS and approves it via the current `az login` session
+
+No portal steps are required. The command prints the bolt URI to use when it completes:
+
+```
+bolt://neo4j.private:7687
+```
+
+### Connect from a serverless notebook
+
+Open a **serverless** notebook in the Databricks workspace and run:
+
+```python
+%pip install neo4j -q
+```
+
+```python
+from neo4j import GraphDatabase
+
+# bolt:// (direct mode) is required for serverless — routing table fetch is not supported
+driver = GraphDatabase.driver("bolt://neo4j.private:7687", auth=("neo4j", "<password>"))
+with driver.session() as s:
+    print(s.run("RETURN 1 AS n").single()["n"])
+driver.close()
+```
+
+Use `bolt://` (not `neo4j://`) — serverless compute does not support the routing table request that `neo4j://` triggers. The hostname `neo4j.private` must match the `--domain-name` value used when `setup-ncc` was run (default: `neo4j.private`). Databricks resolves this hostname internally through the private endpoint; no external DNS is required.
+
+### Options
+
+```bash
+# Use a different domain name for the private endpoint rule
+uv run bicep-deploy setup-ncc --scenario peer-databricks-v2025 --domain-name my-neo4j.internal
+
+# Use a different Private Link Service resource name (default: pls-neo4j)
+uv run bicep-deploy setup-ncc --scenario peer-databricks-v2025 --pls-name my-pls
+```
+
+The command is idempotent — re-running it after a partial failure skips steps that already completed.
