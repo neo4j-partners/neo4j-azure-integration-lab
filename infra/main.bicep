@@ -38,6 +38,15 @@ param oidcConfig string = 'none'
 @description('Fixed name for the Private Link Service. Stable across redeploys of the same resource group.')
 param plsName string = 'pls-neo4j'
 
+@description('Source CIDR for the SSH NSG rule. Defaults to Internet (open). Restrict to a known range for production.')
+param sshSourceCidr string = 'Internet'
+
+@description('Assign a public IP to each VMSS instance. Set to false for cluster deployments where LB is the only entry point.')
+param publicIpEnabled bool = true
+
+@description('Enable the Neo4j HTTP connector on port 7474. Set to false to serve the browser exclusively over HTTPS (7473).')
+param enableHttp bool = true
+
 var deploymentUniqueId = uniqueString(resourceGroup().id, deployment().name)
 var resourceSuffix = deploymentUniqueId
 
@@ -46,6 +55,7 @@ module network 'modules/network.bicep' = {
   params: {
     location: location
     resourceSuffix: resourceSuffix
+    sshSourceCidr: sshSourceCidr
   }
 }
 
@@ -89,7 +99,8 @@ var cloudInitStep3 = replace(cloudInitStep2, '\${admin_password}', passwordBase6
 var cloudInitStep4 = replace(cloudInitStep3, '\${license_agreement}', licenseAgreement)
 var cloudInitStep5 = replace(cloudInitStep4, '\${node_count}', string(nodeCount))
 var cloudInitStep6 = replace(cloudInitStep5, '\${oidc_config}', oidcConfig)
-var cloudInitData = cloudInitStep6
+var cloudInitStep7 = replace(cloudInitStep6, '\${disable_http_config}', enableHttp ? '' : 'server.http.enabled=false')
+var cloudInitData = cloudInitStep7
 var cloudInitBase64 = base64(cloudInitData)
 
 module vmss 'modules/vmss.bicep' = {
@@ -109,6 +120,7 @@ module vmss 'modules/vmss.bicep' = {
     subnetId: network.outputs.subnetId
     loadBalancerBackendAddressPools: loadbalancer.outputs.loadBalancerBackendAddressPools
     loadBalancerCondition: loadBalancerCondition
+    publicIpEnabled: publicIpEnabled
   }
 }
 
@@ -122,10 +134,10 @@ output privateLinkServiceId string = loadbalancer.outputs.privateLinkServiceId
 output vmScaleSetsId string = vmss.outputs.vmScaleSetsId
 output vmScaleSetsName string = vmss.outputs.vmScaleSetsName
 
-output Neo4jBrowserURL string = uri('http://vm0.neo4j-${deploymentUniqueId}.${location}.cloudapp.azure.com:7474', '')
+output Neo4jBrowserURL string = publicIpEnabled ? uri('http://vm0.neo4j-${deploymentUniqueId}.${location}.cloudapp.azure.com:7474', '') : ''
 output Username string = 'neo4j'
 
-// SSH access information
-output sshHostname string = 'vm0.neo4j-${deploymentUniqueId}.${location}.cloudapp.azure.com'
+// SSH access information (empty when publicIpEnabled = false — use Bastion or a jumpbox instead)
+output sshHostname string = publicIpEnabled ? 'vm0.neo4j-${deploymentUniqueId}.${location}.cloudapp.azure.com' : ''
 output sshUsername string = adminUsername
-output sshCommand string = 'ssh ${adminUsername}@vm0.neo4j-${deploymentUniqueId}.${location}.cloudapp.azure.com'
+output sshCommand string = publicIpEnabled ? 'ssh ${adminUsername}@vm0.neo4j-${deploymentUniqueId}.${location}.cloudapp.azure.com' : ''

@@ -132,6 +132,13 @@ runcmd:
       echo "M2M OIDC configuration applied"
     fi
 
+  # HTTP connector toggle — empty by default (HTTP enabled); set to 'server.http.enabled=false' to disable
+  - |
+    HTTP_CONFIG='${disable_http_config}'
+    if [ -n "$HTTP_CONFIG" ]; then
+      echo "$HTTP_CONFIG" >> /etc/neo4j/neo4j.conf
+    fi
+
   # Decode and set admin password, then start Neo4j
   # IMPORTANT: All password handling must be in ONE script block because
   # shell variables don't persist across separate runcmd entries in cloud-init
@@ -155,8 +162,10 @@ runcmd:
     systemctl start neo4j
 
   # Wait for Neo4j to be fully ready
+  # Checks HTTP on 7474 first; falls back to TCP on Bolt (7687) when HTTP is disabled
   - |
-    until curl -s -o /dev/null -w '%{http_code}' http://localhost:7474 | grep -q "200"; do
+    until curl -s -o /dev/null -w '%{http_code}' http://localhost:7474 2>/dev/null | grep -q "200" || \
+          bash -c 'echo > /dev/tcp/localhost/7687' 2>/dev/null; do
       echo "Waiting for Neo4j to be ready..."
       sleep 5
     done

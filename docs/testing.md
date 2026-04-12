@@ -56,15 +56,42 @@ VNet checks are useful for **any cluster deployment**, not just Databricks-peere
 
 ### Databricks checks (`--checks databricks`)
 
-Submits a Python job to a fresh Databricks cluster that TCP-probes the Neo4j load balancer from inside the Databricks container subnet. This is the only test that proves the actual Databricks → Neo4j path. Takes ~5–8 minutes (cluster cold start).
+Submits a Python probe job that TCP- and Bolt-tests the Neo4j load balancer from inside Databricks compute. Two independent compute paths are covered: classic (VNet peering) and serverless (NCC Private Link). Each path is tested separately because a working VNet peer tells you nothing about whether the Private Link route is live.
+
+#### Classic compute checks
+
+Runs from a fresh job cluster provisioned into the Databricks-managed VNet that is peered with the Neo4j VNet. Takes ~8–10 minutes (cluster cold start plus PyPI installation).
 
 | Check | What it verifies |
 |---|---|
 | Databricks workspace API | AAD token auth succeeds and workspace is reachable |
-| Cross-VNet TCP 7687 | `socket.create_connection(lb_ip, 7687)` from Databricks job cluster |
-| Cross-VNet TCP 7474 | `socket.create_connection(lb_ip, 7474)` from Databricks job cluster |
+| Cross-VNet TCP 7687 | TCP socket to LB IP on port 7687 from inside the Databricks VNet |
+| Cross-VNet TCP 7474 | TCP socket to LB IP on port 7474 from inside the Databricks VNet |
+| Bolt driver (from Databricks classic) | Neo4j driver authenticates and `RETURN 1` executes through the VNet peer |
+| Cluster topology (from Databricks classic) | `SHOW SERVERS` returns at least one enabled node |
 
-The job always uses a **new cluster**, not an existing interactive one. This matters: a cluster started before a VNet peering or NSG change may not have picked up the new routes. A fresh cluster is provisioned after all infrastructure is in place.
+The job always uses a **new cluster**, not an existing interactive one. A cluster started before a VNet peering or NSG change may not have picked up the new routes. A fresh cluster is provisioned after all infrastructure is in place.
+
+#### Serverless compute checks
+
+Runs from Databricks serverless compute, which has no access to the customer VNet and reaches Neo4j exclusively through the NCC Private Link route. Requires `setup-ncc` to have been run first. Takes ~3–5 minutes (serverless cold start is shorter than classic).
+
+| Check | What it verifies |
+|---|---|
+| Databricks workspace API | AAD token auth succeeds and workspace is reachable |
+| DNS resolution (from Databricks serverless) | Private endpoint domain name resolves inside the Databricks serverless subnet |
+| TCP 7687 (from Databricks serverless) | TCP socket reaches Neo4j port 7687 via the Private Link route |
+| TCP 7474 (from Databricks serverless) | TCP socket reaches Neo4j port 7474 via the Private Link route |
+| Bolt driver (from Databricks serverless) | Neo4j driver authenticates over the Private Link path |
+| Cluster topology (from Databricks serverless) | `SHOW SERVERS` returns at least one enabled node |
+
+Both probe scripts (`neo4j_classic_probe.py` and `neo4j_serverless_probe.py`) are uploaded automatically before each run, so they always reflect the current version on disk. `setup-databricks` is still required to create the secrets scope and upload the interactive connectivity notebooks; `setup-ncc` is still required to provision the NCC and Private Link route.
+
+#### Auto-detection
+
+By default, `neo4j-connect check` runs all available paths. It runs classic checks when `databricks_workspace_host` is present in the deployment profile and adds serverless checks when `serverless.ncc_configured` is set (written by `setup-ncc`). Use `--compute` to override.
+
+When both classic and serverless are active (`--compute both` or auto-detected), both jobs are submitted concurrently. Progress messages from both jobs interleave in the terminal; results are displayed in order after both complete. Combined run time is bounded by the slower path (~8–10 minutes rather than ~13–15 minutes sequential).
 
 Databricks checks are skipped automatically when running `--checks all` against a profile that has no Databricks workspace. Running `--checks databricks` explicitly against such a profile exits with an error.
 
@@ -75,14 +102,23 @@ Databricks checks are skipped automatically when running `--checks all` against 
 ```bash
 cd deployments
 
-# Run both check suites (Databricks checks skipped if no workspace in profile)
+# Run all checks — Databricks classic and serverless auto-detected from deployment profile
 uv run neo4j-connect check --scenario peer-databricks-v2025
 
 # VNet checks only — faster, no Databricks needed
 uv run neo4j-connect check --scenario peer-databricks-v2025 --checks vnet
 
-# Databricks checks only — cross-VNet TCP probe
+# Databricks checks only — classic and serverless auto-detected
 uv run neo4j-connect check --scenario peer-databricks-v2025 --checks databricks
+
+# Force classic compute only (skips serverless even if NCC is configured)
+uv run neo4j-connect check --scenario peer-databricks-v2025 --compute classic
+
+# Force serverless only (requires setup-ncc to have been run)
+uv run neo4j-connect check --scenario peer-databricks-v2025 --compute serverless
+
+# Run both paths explicitly
+uv run neo4j-connect check --scenario peer-databricks-v2025 --compute both
 
 # List all deployment profiles across both engines
 uv run neo4j-connect status

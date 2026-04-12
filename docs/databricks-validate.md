@@ -39,7 +39,16 @@ This creates a secrets scope named `neo4j-peer-databricks-v2025` containing five
 | `password` | deployment password |
 | `database` | `neo4j` |
 
-It then uploads `notebooks/neo4j_connectivity_test.ipynb` (repo root) to `/Shared/neo4j-peer-databricks-v2025-connectivity-test` in the workspace, with the scope name pre-filled.
+It then uploads three artifacts to the workspace:
+
+| Artifact | Workspace path | Purpose |
+|---|---|---|
+| `notebooks/neo4j_connectivity_test.ipynb` | `/Shared/neo4j-peer-databricks-v2025-connectivity-test` | Interactive classic compute test notebook |
+| `notebooks/neo4j_serverless_connectivity_test.ipynb` | `/Shared/neo4j-peer-databricks-v2025-serverless-connectivity-test` | Interactive serverless compute test notebook |
+| `notebooks/neo4j_classic_probe.py` | `dbfs:/neo4j/neo4j_classic_probe.py` | Probe script run by `neo4j-connect check` (classic path) |
+| `notebooks/neo4j_serverless_probe.py` | `/Shared/neo4j-serverless-probe.py` | Probe script run by `neo4j-connect check` (serverless path) |
+
+The classic notebook has the scope name pre-filled. The serverless notebook includes a widget for the private domain name (set by `setup-ncc`, default `neo4j.private`).
 
 ---
 
@@ -75,12 +84,22 @@ See [../playbook_validate.md](../playbook_validate.md) in the repo root for the 
 
 ## Automated connectivity checks
 
-`neo4j-connect` provides a CLI-based alternative that covers both VNet-internal health and the cross-VNet Databricks path without a PAT or an interactive notebook:
+`neo4j-connect` provides a CLI-based alternative that covers both VNet-internal health and the Databricks path without a PAT or an interactive notebook. It auto-detects which compute paths to test from the deployment profile:
 
 ```bash
 cd deployments
+
+# Auto-detects classic and serverless based on deployment profile
 uv run neo4j-connect check --scenario peer-databricks-v2025
+
+# Classic VNet peering path only
+uv run neo4j-connect check --scenario peer-databricks-v2025 --compute classic
+
+# Serverless Private Link path only (requires setup-ncc to have run)
+uv run neo4j-connect check --scenario peer-databricks-v2025 --compute serverless
 ```
+
+After `setup-ncc` completes it writes NCC configuration to the deployment JSON. `neo4j-connect check` reads this and automatically adds the serverless test suite alongside the classic checks — no extra flags needed.
 
 See [testing.md](testing.md) for the full reference.
 
@@ -104,6 +123,7 @@ This single command:
 2. Attaches the NCC to the workspace
 3. Creates a private endpoint rule pointing at the `pls-neo4j` Private Link Service on the Neo4j load balancer
 4. Polls for the Pending endpoint connection on the Azure PLS and approves it via the current `az login` session
+5. Writes the NCC configuration (`domain_name`, `bolt_uri`, `ncc_configured: true`) to the deployment JSON so `neo4j-connect check` can auto-detect the serverless path on subsequent runs
 
 No portal steps are required. The command prints the bolt URI to use when it completes:
 

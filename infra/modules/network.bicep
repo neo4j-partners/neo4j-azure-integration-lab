@@ -1,5 +1,6 @@
 param location string
 param resourceSuffix string
+param sshSourceCidr string = 'Internet'
 
 var networkSGName = 'nsg-neo4j-${location}-${resourceSuffix}'
 var vnetName = 'vnet-neo4j-${location}-${resourceSuffix}'
@@ -16,7 +17,7 @@ resource networkSG 'Microsoft.Network/networkSecurityGroups@2025-03-01' = {
           protocol: 'Tcp'
           sourcePortRange: '*'
           destinationPortRange: '22'
-          sourceAddressPrefix: 'Internet'
+          sourceAddressPrefix: sshSourceCidr
           destinationAddressPrefix: '*'
           access: 'Allow'
           priority: 100

@@ -75,6 +75,9 @@ class TestScenario(BaseModel):
     databricks_workspace_name: str = Field("neo4j-dbx", description="Databricks workspace name")
     databricks_vnet_cidr: str = Field("192.168.0.0/16", description="Databricks VNet CIDR")
 
+    # Network hardening (passed through to both main.bicep and databricks-main.bicep)
+    ssh_source_cidr: str = Field("Internet", description="Source CIDR for SSH NSG rule")
+
     @field_validator("read_replica_count")
     @classmethod
     def validate_read_replicas(cls, v: int, info) -> int:

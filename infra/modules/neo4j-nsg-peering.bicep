@@ -1,6 +1,7 @@
 param nsgName string
 param location string
 param databricksCidr string
+param sshSourceCidr string = 'Internet'
 
 resource networkSG 'Microsoft.Network/networkSecurityGroups@2025-03-01' = {
   name: nsgName
@@ -12,7 +13,7 @@ resource networkSG 'Microsoft.Network/networkSecurityGroups@2025-03-01' = {
         properties: {
           protocol: 'Tcp'
           destinationPortRange: '22'
-          sourceAddressPrefix: 'Internet'
+          sourceAddressPrefix: sshSourceCidr
           destinationAddressPrefix: '*'
           access: 'Allow'
           priority: 100
@@ -25,7 +26,7 @@ resource networkSG 'Microsoft.Network/networkSecurityGroups@2025-03-01' = {
         properties: {
           protocol: 'Tcp'
           destinationPortRange: '7473'
-          sourceAddressPrefix: databricksCidr
+          sourceAddressPrefix: 'Internet'
           destinationAddressPrefix: '*'
           access: 'Allow'
           priority: 101

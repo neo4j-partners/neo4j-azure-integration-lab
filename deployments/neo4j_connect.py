@@ -60,6 +60,18 @@ def check(
         Optional[Path],
         typer.Option("--update-doc", help="Markdown file to insert results into (replaces existing section on re-run)"),
     ] = None,
+    compute: Annotated[
+        str,
+        typer.Option(
+            "--compute",
+            "-C",
+            help=(
+                "Compute type to test: classic, serverless, both, or auto. "
+                "auto (default) runs classic when databricks_workspace_host is present "
+                "and adds serverless when serverless.ncc_configured is set."
+            ),
+        ),
+    ] = "auto",
 ) -> None:
     """
     Run connectivity checks for a deployed Neo4j scenario.
@@ -102,6 +114,11 @@ def check(
     with open(details_file) as f:
         deployment = json.load(f)
 
+    valid_compute = ("auto", "classic", "serverless", "both")
+    if compute not in valid_compute:
+        console.print(f"[red]Invalid --compute value '{compute}'. Choose from: {', '.join(valid_compute[1:])}[/red]")
+        raise typer.Exit(1)
+
     console.print(
         f"\n[dim]Profile: {details_file.name} (engine: {deployment.get('engine', 'unknown')})[/dim]"
     )
@@ -132,7 +149,7 @@ def check(
                 raise typer.Exit(1)
             console.print("[dim]No Databricks workspace in profile — skipping Databricks checks.[/dim]")
         else:
-            dbx_report = run_databricks_tests(deployment)
+            dbx_report = run_databricks_tests(deployment, compute=compute)
             _print_report(dbx_report)
             if update_doc and update_doc.exists():
                 _update_doc(update_doc, dbx_report.label, dbx_report)

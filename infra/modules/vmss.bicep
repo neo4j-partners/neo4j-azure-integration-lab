@@ -13,6 +13,7 @@ param identityId string
 param subnetId string
 param loadBalancerBackendAddressPools array
 param loadBalancerCondition bool
+param publicIpEnabled bool = true
 
 var vmScaleSetsName = 'vmss-neo4j-${location}-${resourceSuffix}'
 
@@ -88,7 +89,7 @@ resource vmScaleSets 'Microsoft.Compute/virtualMachineScaleSets@2025-04-01' = {
                     subnet: {
                       id: subnetId
                     }
-                    publicIPAddressConfiguration: {
+                    publicIPAddressConfiguration: publicIpEnabled ? {
                       name: 'public'
                       properties: {
                         idleTimeoutInMinutes: 30
@@ -96,7 +97,7 @@ resource vmScaleSets 'Microsoft.Compute/virtualMachineScaleSets@2025-04-01' = {
                           domainNameLabel: 'neo4j-${resourceSuffix}'
                         }
                       }
-                    }
+                    } : null
                     loadBalancerBackendAddressPools: (loadBalancerCondition
                       ? loadBalancerBackendAddressPools
                       : null)

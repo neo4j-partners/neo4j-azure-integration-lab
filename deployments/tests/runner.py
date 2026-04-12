@@ -7,14 +7,16 @@ run_databricks_tests(); the shim in src/test_runner.py wraps these for
 ansible_deploy.py backward compatibility.
 """
 
+import concurrent.futures
 from datetime import datetime, timezone
 from pathlib import Path
 
 from rich.console import Console
 
-from .base import TestReport, _print_result
+from .base import TestReport, TestResult, _print_result
 from .bolt import BoltChecker
 from .databricks import DatabricksChecker
+from .databricks_serverless import ServerlessDatabricksChecker
 from .neo4j_service import NeoServiceChecker
 from .nsg import NSGChecker
 from .peering import PeeringChecker
@@ -67,22 +69,82 @@ def run_vnet_tests(deployment: dict) -> TestReport:
     return report
 
 
-def run_databricks_tests(deployment: dict) -> TestReport:
+def run_databricks_tests(deployment: dict, compute: str = "auto") -> TestReport:
     """
-    Run the cross-VNet check: authenticate to Databricks and submit a
-    notebook job that TCP-probes the Neo4j LB from the Databricks container
-    subnet.
+    Run Databricks connectivity checks: submit a SparkPythonTask probe that
+    TCP- and Bolt-tests the Neo4j LB from inside Databricks compute.
+
+    compute may be "auto", "classic", "serverless", or "both".
+    When "auto", classic runs if workspace_host is present and serverless
+    runs if ncc_configured is set in the deployment's serverless block.
     """
     conn = deployment.get("connection", {})
     lb_ip = conn.get("lb_private_ip", "")
     workspace_host = conn.get("databricks_workspace_host", "")
+    username = conn.get("username", "neo4j")
+    password = conn.get("password", "")
+    serverless = deployment.get("serverless", {})
+    domain_name = serverless.get("domain_name", "")
+    serverless_bolt_uri = serverless.get("bolt_uri", "")
+    ncc_configured = serverless.get("ncc_configured", False)
+
+    run_classic = compute in ("classic", "both") or (compute == "auto" and bool(workspace_host))
+    run_serverless = compute in ("serverless", "both") or (compute == "auto" and ncc_configured)
 
     report = TestReport(label="Databricks connectivity checks")
-    console.print("\n[bold cyan]Databricks connectivity checks[/bold cyan]")
 
-    for r in DatabricksChecker(lb_ip, workspace_host).run():
-        _print_result(r)
-        report.results.append(r)
+    if compute == "classic" and not workspace_host:
+        report.results.append(TestResult(
+            "Classic compute check",
+            False,
+            "No Databricks workspace in this deployment profile — databricks_workspace_host is not set",
+        ))
+        return report
+
+    if compute == "serverless" and not ncc_configured:
+        report.results.append(TestResult(
+            "Serverless compute check",
+            False,
+            "setup-ncc has not been run for this scenario — serverless.ncc_configured is not set",
+        ))
+        return report
+
+    if run_classic and run_serverless:
+        console.print(
+            "\n[bold cyan]Classic + Serverless compute checks — running in parallel[/bold cyan]"
+        )
+        console.print("[dim](progress messages from both jobs may interleave)[/dim]")
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+            classic_future = executor.submit(
+                DatabricksChecker(lb_ip, workspace_host, username, password).run
+            )
+            serverless_future = executor.submit(
+                ServerlessDatabricksChecker(
+                    domain_name, serverless_bolt_uri, workspace_host, username, password
+                ).run
+            )
+            classic_results = classic_future.result()
+            serverless_results = serverless_future.result()
+        console.print("\n[bold cyan]Classic compute results[/bold cyan]")
+        for r in classic_results:
+            _print_result(r)
+            report.results.append(r)
+        console.print("\n[bold cyan]Serverless compute results[/bold cyan]")
+        for r in serverless_results:
+            _print_result(r)
+            report.results.append(r)
+    elif run_classic:
+        console.print("\n[bold cyan]Classic compute checks[/bold cyan]")
+        for r in DatabricksChecker(lb_ip, workspace_host, username, password).run():
+            _print_result(r)
+            report.results.append(r)
+    elif run_serverless:
+        console.print("\n[bold cyan]Serverless compute checks[/bold cyan]")
+        for r in ServerlessDatabricksChecker(
+            domain_name, serverless_bolt_uri, workspace_host, username, password
+        ).run():
+            _print_result(r)
+            report.results.append(r)
 
     return report
 

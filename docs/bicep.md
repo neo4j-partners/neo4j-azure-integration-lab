@@ -62,6 +62,8 @@ uv run bicep-deploy setup-databricks --scenario peer-databricks-v2025
 uv run bicep-deploy setup-ncc --scenario peer-databricks-v2025
 
 # Run automated connectivity checks (VNet-internal + cross-VNet from Databricks)
+# Covers: peering, NSG, VMSS, LB Bolt/HTTP, topology, DNS resolution, TCP 7474/7687, Bolt driver
+# Classic and serverless jobs run concurrently when both are configured (~8–10 min total)
 uv run neo4j-connect check --scenario peer-databricks-v2025
 # See docs/testing.md for the full reference
 
@@ -221,4 +223,95 @@ uv run bicep-deploy deploy --scenario cluster-v2025
 uv run bicep-deploy deploy --scenario peer-databricks-v2025
 ```
 
-See [databricks-validate.md](databricks-validate.md) for testing connectivity after deployment.
+See [databricks-validate.md](databricks-validate.md) for the interactive notebook workflow and `setup-ncc` reference. See [testing.md](testing.md) for the full `neo4j-connect` check reference including the classic topology check, serverless DNS resolution, TCP 7474 verification, and parallel job execution.
+
+## Production Security Hardening
+
+The default configuration is tuned for demo and testing use. Before moving to production, review the following.
+
+### Network access after `peer-databricks-v2025`
+
+When `peer-databricks-v2025` is deployed, the Neo4j NSG is replaced to restrict public access:
+
+| Port | After peering |
+|------|--------------|
+| 22 (SSH) | Open to Internet |
+| 7473 (HTTPS / Neo4j Browser) | Open to Internet |
+| 7474 (HTTP / Neo4j Browser) | Databricks VNet only |
+| 7687 (Bolt) | Databricks VNet only |
+| 7688 (Bolt Routing) | Databricks VNet only |
+
+Bolt is intentionally blocked from public access — connections from outside the Databricks VNet must use an SSH tunnel. Browser access via HTTPS (7473) remains public. Decide whether this is the correct posture for your environment before deploying; if you need to restrict the browser UI as well, change the `HTTPS` rule in `infra/modules/neo4j-nsg-peering.bicep` to use `sourceAddressPrefix: databricksCidr`.
+
+### SSH access
+
+Port 22 is open to `Internet` in all NSG configurations, including after `peer-databricks-v2025`. For production, restrict the SSH source to a known CIDR using the `sshSourceCidr` parameter in `infra/main.bicep` and `infra/databricks-main.bicep`:
+
+```bicep
+// infra/main.bicep — restrict SSH to a corporate IP range
+param sshSourceCidr string = '203.0.113.0/24'
+```
+
+Alternatively, deploy [Azure Bastion](https://learn.microsoft.com/azure/bastion/bastion-overview) in a dedicated subnet and set `sshSourceCidr` to the Bastion subnet CIDR so only Bastion can SSH to the nodes.
+
+### VMSS public IPs in cluster deployments
+
+Each VMSS instance is assigned a public IP and DNS label even in cluster deployments that sit behind the internal load balancer. This allows direct SSH access to individual nodes but also exposes them to the Internet (subject to the NSG). For production cluster deployments, set `publicIpEnabled: false` in `infra/main.bicep` to remove per-VM public IPs:
+
+```bicep
+// infra/main.bicep — remove per-node public IPs for cluster
+param publicIpEnabled bool = false
+```
+
+When `publicIpEnabled` is `false`, the `Neo4jBrowserURL`, `sshHostname`, and `sshCommand` outputs return empty strings. Access to individual nodes requires Azure Bastion or an SSH tunnel through the load balancer. The load balancer and Private Link Service are unaffected.
+
+### HTTP connector (port 7474)
+
+The cloud-init scripts explicitly enable `server.http.listen_address=0.0.0.0:7474`. The NSG allows this port from the Internet in standalone and cluster scenarios (it is restricted to the Databricks VNet after peering). For production, disable the HTTP connector and serve the Neo4j Browser exclusively over HTTPS (7473) using the `enableHttp` parameter in `infra/main.bicep`:
+
+```bicep
+// infra/main.bicep — disable unencrypted HTTP connector
+param enableHttp bool = false
+```
+
+When `enableHttp` is `false`, `server.http.enabled=false` is written to `neo4j.conf` at boot. The Neo4j Browser remains accessible on port 7473 (HTTPS). The deployment readiness check automatically falls back to a TCP check on Bolt (7687) when HTTP is unavailable.
+
+**Not safe for cluster deployments yet.** The load balancer health probe (`httpprobe`) does an HTTP GET on port 7474. When `enableHttp` is `false`, that request gets no response, the probe fails for every backend, and the LB marks all instances unhealthy — Bolt connections on 7687 receive TCP RST even though Neo4j is running. Two items need to be addressed before `enableHttp=false` is usable in a cluster deployment:
+
+1. **LB probe compatibility**: Add an HTTPS probe on port 7473 (or a dedicated health endpoint) and update the `inbound7687` and `inbound7688` rules to reference it when HTTP is disabled. The current `httpprobe` only works when the HTTP connector is on.
+2. **`sshSourceCidr` pass-through**: The `databricks-main.bicep` template accepts `sshSourceCidr` but `_generate_databricks_parameters` in `deployments/src/deployment.py` does not pass it. The Bicep default (`Internet`) covers current usage, but the parameter is silently ignored if you restrict SSH on the cluster side. Add `ssh_source_cidr` to `TestScenario` and pass it through.
+
+`enableHttp=false` is safe for **standalone** deployments where no load balancer is involved.
+
+### SELinux set to permissive
+
+The cloud-init scripts set SELinux to `permissive` mode (`setenforce 0`) to simplify the Neo4j installation. In permissive mode, SELinux logs policy violations but does not enforce them. For production deployments on RHEL/CentOS-based images, configure a proper Neo4j SELinux policy and restore `enforcing` mode rather than leaving the VM without mandatory access controls.
+
+### Private Link Service visibility
+
+The PLS is deployed with `visibility.subscriptions: ['*']`, which allows any Azure subscription to request a private endpoint connection. Manual approval is required (no auto-approval is configured), so no unauthorized connections can be established without an explicit `az network private-link-service connection update` approval. For tighter production controls, change the visibility to the specific Databricks subscription ID(s) that need access (`infra/modules/loadbalancer.bicep`, `privateLinkService` resource).
+
+### Private Link Service NAT IP capacity
+
+One NAT IP is configured on the PLS. Azure supports up to 8 NAT IPs per PLS, each providing additional TCP port capacity. For high-concurrency production workloads, add NAT IP configurations to `infra/modules/loadbalancer.bicep`. The `pls-subnet` (`10.0.2.0/28`) has space for up to 14 addresses.
+
+### TCP keepalives for connections through Private Link
+
+The Azure Private Link Service has a platform-level idle connection timeout of approximately 5 minutes that cannot be changed in Bicep. The load balancer rules are set to a 4-minute idle timeout. Connections that are idle longer than 4 minutes will be silently reset. Configure the Neo4j driver with a connection liveness check or TCP keepalive shorter than 4 minutes:
+
+```python
+# Python driver example
+driver = GraphDatabase.driver(
+    bolt_uri,
+    auth=("neo4j", password),
+    liveness_check_timeout=120,   # seconds — check idle connections every 2 min
+)
+```
+
+### License type
+
+All default scenarios use `licenseType: Evaluation`. Evaluation licenses are time-limited and not permitted for production use. Set `license_type: Enterprise` in `scenarios.yaml` and provide a valid Neo4j Enterprise license before deploying to production.
+
+### VM patching
+
+The VMSS upgrade policy is `Manual`. OS and Neo4j package updates must be applied manually via a rolling instance upgrade. For production, establish a patching schedule and test upgrades in a lower environment first — Neo4j cluster upgrades must follow a specific rolling procedure to avoid downtime.

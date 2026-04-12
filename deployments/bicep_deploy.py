@@ -110,6 +110,7 @@ def save_deployment_details(
                 "vnet_id": source_net.get("vnet_id", ""),
                 "nsg_id": source_net.get("nsg_id", ""),
                 "lb_private_ip": lb_ip,
+                "private_link_service_id": source_net.get("private_link_service_id", ""),
                 "databricks_vnet_id": databricks_vnet_id,
             },
         }
@@ -147,6 +148,7 @@ def save_deployment_details(
                 "vnet_id": outputs.get("vnetId", {}).get("value", ""),
                 "nsg_id": outputs.get("nsgId", {}).get("value", ""),
                 "lb_private_ip": lb_ip,
+                "private_link_service_id": outputs.get("privateLinkServiceId", {}).get("value", ""),
             },
         }
 
@@ -223,6 +225,8 @@ def display_connection_info(details: dict, scenario_name: str) -> None:
         table.add_row("LB Private IP", conn["lb_private_ip"])
     if conn.get("databricks_bolt_uri"):
         table.add_row("Databricks Bolt URI", conn["databricks_bolt_uri"])
+    if details.get("serverless", {}).get("bolt_uri"):
+        table.add_row("Serverless Bolt URI", details["serverless"]["bolt_uri"])
     if conn.get("databricks_workspace_url"):
         table.add_row("Databricks URL", conn["databricks_workspace_url"])
     if ssh.get("command"):
@@ -1287,13 +1291,22 @@ def setup_ncc_cmd(
         str,
         typer.Option("--pls-name", help="Private Link Service resource name (default: pls-neo4j)"),
     ] = "pls-neo4j",
+    ncc_name: Annotated[
+        str,
+        typer.Option(
+            "--ncc-name",
+            help="Databricks NCC name. Defaults to 'neo4j-ncc-<scenario>'. "
+                 "NCCs are account-level objects shared across workspaces in the same region — "
+                 "use a scenario-scoped name when multiple deployments need isolated NCCs.",
+        ),
+    ] = "",
 ) -> None:
     """
     Create a Databricks NCC, attach it to the workspace, and establish a private endpoint
     to the Neo4j Private Link Service for serverless compute connectivity.
 
     Reads .deployments/{scenario}-{engine}.json and:
-    - Creates or reuses a Databricks NCC named 'neo4j-ncc' in the workspace region
+    - Creates or reuses a Databricks NCC in the workspace region
     - Attaches the NCC to the workspace
     - Creates a PE rule with domain_names=[--domain-name] pointing at the PLS
     - Polls for the Pending endpoint connection and approves it via Azure CLI
@@ -1390,11 +1403,15 @@ def setup_ncc_cmd(
         console.print(f"[red]Failed to get Databricks AAD token: {e.stderr}[/red]")
         raise typer.Exit(1)
 
+    # Default NCC name to scenario-scoped name when not explicitly provided
+    resolved_ncc_name = ncc_name or f"neo4j-ncc-{scenario}"
+
     # --- Run NCC setup ---
     console.print(f"\n[bold]NCC Setup[/bold]")
     console.print(f"  PLS resource ID: [dim]{pls_resource_id}[/dim]")
     console.print(f"  Workspace region: [dim]{workspace_region}[/dim]")
     console.print(f"  Workspace ID:     [dim]{workspace_id}[/dim]")
+    console.print(f"  NCC name:         [dim]{resolved_ncc_name}[/dim]")
     console.print(f"  domain_names:     [dim]{[domain_name]}[/dim]")
 
     try:
@@ -1407,6 +1424,7 @@ def setup_ncc_cmd(
             pls_name=pls_name,
             domain_names=[domain_name],
             token=token,
+            ncc_name=resolved_ncc_name,
         )
     except TimeoutError as e:
         console.print(f"[yellow]⚠ {e}[/yellow]")
@@ -1415,11 +1433,26 @@ def setup_ncc_cmd(
         console.print(f"[red]NCC setup failed: {e}[/red]")
         raise typer.Exit(1)
 
+    # --- Persist serverless block to deployment JSON (best-effort) ---
+    try:
+        with open(details_file) as _f:
+            _data = json.load(_f)
+        _data["serverless"] = {
+            "ncc_configured": True,
+            "domain_name": domain_name,
+            "bolt_uri": f"bolt://{domain_name}:7687",
+            "pls_name": pls_name,
+        }
+        with open(details_file, "w") as _f:
+            json.dump(_data, _f, indent=2)
+    except Exception as _e:
+        console.print(f"[yellow]Warning: could not update deployment JSON: {_e}[/yellow]")
+
     bolt_uri = f"bolt://{domain_name}:7687"
     table = Table(show_header=False, box=None, padding=(0, 2))
     table.add_column("Label", style="cyan")
     table.add_column("Value", style="white")
-    table.add_row("NCC name", "neo4j-ncc")
+    table.add_row("NCC name", resolved_ncc_name)
     table.add_row("PLS name", pls_name)
     table.add_row("domain_name", domain_name)
     table.add_row("Serverless bolt URI", bolt_uri)

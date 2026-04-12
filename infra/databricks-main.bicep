@@ -7,6 +7,8 @@ param neo4jNsgName string
 param databricksResourceGroup string
 param databricksWorkspaceName string = 'neo4j-dbx'
 param databricksVnetCidr string = '192.168.0.0/16'
+@description('Source CIDR for the SSH NSG rule. Defaults to Internet (open). Restrict to a known range for production.')
+param sshSourceCidr string = 'Internet'
 
 // Step 1: Create the Databricks resource group
 resource databricksRg 'Microsoft.Resources/resourceGroups@2024-11-01' = {
@@ -78,6 +80,7 @@ module nsgUpdate 'modules/neo4j-nsg-peering.bicep' = {
     nsgName: neo4jNsgName
     location: location
     databricksCidr: databricksVnetCidr
+    sshSourceCidr: sshSourceCidr
   }
 }
 

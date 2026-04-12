@@ -167,6 +167,7 @@ class DeploymentEngine:
                 "databricksResourceGroup": {"value": dbx_rg},
                 "databricksWorkspaceName": {"value": scenario.databricks_workspace_name},
                 "databricksVnetCidr": {"value": scenario.databricks_vnet_cidr},
+                "sshSourceCidr": {"value": scenario.ssh_source_cidr},
             },
         }
 

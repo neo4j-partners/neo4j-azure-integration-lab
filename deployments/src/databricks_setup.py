@@ -19,24 +19,15 @@ console = Console()
 # Notebooks live at the repo root, one level above deployments/
 NOTEBOOKS_DIR = Path(__file__).parent.parent.parent / "notebooks"
 
-# Permanent DBFS path for the TCP probe script — reused by ansible-deploy test
-DBFS_PROBE_PATH = "dbfs:/neo4j/neo4j_tcp_probe.py"
+# Permanent DBFS path for the classic probe script — reused by ansible-deploy test
+DBFS_PROBE_PATH = "dbfs:/neo4j/neo4j_classic_probe.py"
 
-# Plain Python TCP probe — no Spark, no dbutils, runs as SparkPythonTask
-# Takes lb_ip as sys.argv[1]. Outputs PASS:PORT or FAIL:PORT:msg lines.
-_TCP_PROBE_SCRIPT = """\
-import socket
-import sys
+# Workspace path for the serverless probe script (no DBFS — serverless cannot use DBFS)
+WORKSPACE_SERVERLESS_PROBE_PATH = "/Shared/neo4j-serverless-probe.py"
 
-lb_ip = sys.argv[1] if len(sys.argv) > 1 else "127.0.0.1"
-for port in [7687, 7474]:
-    try:
-        s = socket.create_connection((lb_ip, port), timeout=10)
-        s.close()
-        print(f"PASS:{port}")
-    except Exception as e:
-        print(f"FAIL:{port}:{e}")
-"""
+# Classic probe script lives on disk alongside the serverless probe.
+# Both are read at runtime to avoid duplicating content in this file.
+_CLASSIC_PROBE_PATH = NOTEBOOKS_DIR / "neo4j_classic_probe.py"
 
 
 def run_databricks_setup(
@@ -68,7 +59,7 @@ def run_databricks_setup(
         FileNotFoundError: If the connectivity test notebook is not found
         Exception: Propagates any Databricks SDK errors so the caller can handle them
     """
-    from databricks.sdk.service.workspace import ImportFormat
+    from databricks.sdk.service.workspace import ImportFormat, Language
 
     lb_ip = bolt_uri.removeprefix("bolt://").split(":")[0]
 
@@ -116,11 +107,63 @@ def run_databricks_setup(
     )
     console.print("[green]✓ Connectivity notebook uploaded[/green]")
 
-    # --- Upload TCP probe script to DBFS (used by ansible-deploy test --phase 2) ---
-    console.print(f"\n[bold]Uploading TCP probe script to DBFS:[/bold] {DBFS_PROBE_PATH}")
-    probe_encoded = base64.b64encode(_TCP_PROBE_SCRIPT.encode()).decode()
+    # --- Upload classic probe script to DBFS (used by ansible-deploy test --phase 2) ---
+    if not _CLASSIC_PROBE_PATH.exists():
+        raise FileNotFoundError(
+            f"Classic probe script not found: {_CLASSIC_PROBE_PATH}\n"
+            f"Expected at: {NOTEBOOKS_DIR}"
+        )
+    console.print(f"\n[bold]Uploading classic probe script to DBFS:[/bold] {DBFS_PROBE_PATH}")
+    probe_encoded = base64.b64encode(_CLASSIC_PROBE_PATH.read_bytes()).decode()
     client.dbfs.put(path=DBFS_PROBE_PATH, contents=probe_encoded, overwrite=True)
-    console.print("[green]✓ TCP probe script uploaded[/green]")
+    console.print("[green]✓ Classic probe script uploaded[/green]")
+
+    # --- Upload serverless probe script to workspace (DBFS unavailable on serverless) ---
+    serverless_probe_local = NOTEBOOKS_DIR / "neo4j_serverless_probe.py"
+    if not serverless_probe_local.exists():
+        raise FileNotFoundError(
+            f"Serverless probe script not found: {serverless_probe_local}\n"
+            f"Expected at: {NOTEBOOKS_DIR}"
+        )
+
+    console.print(f"\n[bold]Uploading serverless probe script to:[/bold] {WORKSPACE_SERVERLESS_PROBE_PATH}")
+    serverless_probe_encoded = base64.b64encode(serverless_probe_local.read_bytes()).decode()
+    client.workspace.import_(
+        path=WORKSPACE_SERVERLESS_PROBE_PATH,
+        format=ImportFormat.SOURCE,
+        language=Language.PYTHON,
+        content=serverless_probe_encoded,
+        overwrite=True,
+    )
+    console.print("[green]✓ Serverless probe script uploaded[/green]")
+
+    # --- Upload serverless connectivity test notebook (manual use) ---
+    if "-connectivity-test" in notebook_path:
+        serverless_notebook_path = notebook_path.replace(
+            "-connectivity-test", "-serverless-connectivity-test"
+        )
+    else:
+        serverless_notebook_path = notebook_path + "-serverless-connectivity-test"
+
+    serverless_notebook_local = NOTEBOOKS_DIR / "neo4j_serverless_connectivity_test.ipynb"
+    if not serverless_notebook_local.exists():
+        raise FileNotFoundError(
+            f"Serverless connectivity test notebook not found: {serverless_notebook_local}\n"
+            f"Expected at: {NOTEBOOKS_DIR}"
+        )
+
+    console.print(f"\n[bold]Uploading serverless connectivity notebook to:[/bold] {serverless_notebook_path}")
+    serverless_notebook_content = serverless_notebook_local.read_text().replace(
+        "SCOPE_NAME_PLACEHOLDER", scope_name
+    )
+    serverless_notebook_encoded = base64.b64encode(serverless_notebook_content.encode()).decode()
+    client.workspace.import_(
+        path=serverless_notebook_path,
+        format=ImportFormat.JUPYTER,
+        content=serverless_notebook_encoded,
+        overwrite=True,
+    )
+    console.print("[green]✓ Serverless connectivity notebook uploaded[/green]")
 
 
 # ---------------------------------------------------------------------------
@@ -131,7 +174,7 @@ def _approve_pending_connection(
     *,
     resource_group: str,
     pls_name: str,
-    timeout_seconds: int = 300,
+    timeout_seconds: int = 600,
 ) -> None:
     """
     Poll the Private Link Service for a Pending endpoint connection, then approve it.
@@ -205,6 +248,7 @@ def setup_ncc(
     pls_name: str,
     domain_names: list[str],
     token: str,
+    ncc_name: str = "neo4j-ncc",
     account_host: str = "https://accounts.azuredatabricks.net",
 ) -> None:
     """
@@ -215,6 +259,8 @@ def setup_ncc(
     group_id is intentionally omitted: per Databricks API docs it is "not used by
     customer-managed private endpoint services".
     domain_names must contain the hostname(s) the Neo4j driver will use to connect.
+    ncc_name controls which NCC is created/reused — use a scenario-scoped name when
+    multiple deployments in the same region need isolated NCCs.
     """
     from databricks.sdk import AccountClient
 
@@ -222,15 +268,15 @@ def setup_ncc(
 
     # --- Create or reuse NCC ---
     nccs = list(account_client.network_connectivity.list_network_connectivity_configs())
-    ncc = next((n for n in nccs if n.name == "neo4j-ncc"), None)
+    ncc = next((n for n in nccs if n.name == ncc_name), None)
     if ncc is None:
         ncc = account_client.network_connectivity.create_network_connectivity_config(
-            name="neo4j-ncc",
+            name=ncc_name,
             region=workspace_region,
         )
-        console.print(f"[green]✓ Created NCC: neo4j-ncc (region: {workspace_region})[/green]")
+        console.print(f"[green]✓ Created NCC: {ncc_name} (region: {workspace_region})[/green]")
     else:
-        console.print(f"[dim]Reusing existing NCC: neo4j-ncc[/dim]")
+        console.print(f"[dim]Reusing existing NCC: {ncc_name}[/dim]")
 
     # --- Attach NCC to workspace ---
     account_client.workspaces.update(

@@ -80,7 +80,7 @@ resource loadBalancer 'Microsoft.Network/loadBalancers@2025-03-01' = if (loadBal
             }
           ]
           probe: {
-            id: resourceId('Microsoft.Network/loadBalancers/probes', loadBalancerName, 'boltprobe')
+            id: resourceId('Microsoft.Network/loadBalancers/probes', loadBalancerName, 'httpprobe')
           }
         }
       }
@@ -107,7 +107,7 @@ resource loadBalancer 'Microsoft.Network/loadBalancers@2025-03-01' = if (loadBal
             }
           ]
           probe: {
-            id: resourceId('Microsoft.Network/loadBalancers/probes', loadBalancerName, 'boltroutingprobe')
+            id: resourceId('Microsoft.Network/loadBalancers/probes', loadBalancerName, 'httpprobe')
           }
         }
       }
@@ -124,28 +124,7 @@ resource loadBalancer 'Microsoft.Network/loadBalancers@2025-03-01' = if (loadBal
           probeThreshold: 1
         }
       }
-      {
-        name: 'boltprobe'
-        properties: {
-          protocol: 'Http'
-          port: 7474
-          requestPath: '/'
-          intervalInSeconds: 5
-          numberOfProbes: 1
-          probeThreshold: 1
-        }
-      }
-      {
-        name: 'boltroutingprobe'
-        properties: {
-          protocol: 'Http'
-          port: 7474
-          requestPath: '/'
-          intervalInSeconds: 5
-          numberOfProbes: 1
-          probeThreshold: 1
-        }
-      }
+
     ]
   }
 }
