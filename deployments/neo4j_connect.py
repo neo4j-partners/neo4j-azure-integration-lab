@@ -7,7 +7,6 @@ VNet-internal and Databricks cross-VNet checks.
 """
 
 import json
-import sys
 from enum import Enum
 from pathlib import Path
 from typing import Optional
@@ -16,9 +15,6 @@ import typer
 from rich.console import Console
 from rich.table import Table
 from typing_extensions import Annotated
-
-sys.path.insert(0, str(Path(__file__).parent))
-sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 from src.utils import find_deployment_file
 

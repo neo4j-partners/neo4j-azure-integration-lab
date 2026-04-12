@@ -18,10 +18,17 @@ dependencies = [
 bicep-deploy = "bicep_deploy:main"
 ansible-deploy = "ansible_deploy:main"
 neo4j-connect = "neo4j_connect:main"
-validate_deploy = "src.validate_deploy:main"
+validate_deploy = "validate_deploy:main"
 
 [tool.uv]
 package = true
+
+[dependency-groups]
+dev = ["pytest>=8.0.0"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src"]

@@ -1,20 +1,41 @@
 # Zero Public Internet: Connecting Databricks and Neo4j Entirely on the Azure Backbone
 
-A Databricks notebook calls `driver.session().run("MATCH (n) RETURN n")`. The packet leaves the cluster node through the NAT gateway, crosses the public internet, arrives at a Neo4j VM's public IP, and the response takes the same route back. Every Cypher query, every graph result, every Neo4j credential transits a network neither party controls.
+A Databricks notebook calls `driver.session().run("MATCH (n) RETURN n")`. The packet leaves the cluster node through the NAT gateway, crosses the public internet, arrives at a Neo4j VM's public IP, and the response takes the same route back. This is a common deployment pattern. Connections over this path are encrypted with TLS, which protects data in transit; a packet intercepted on the public internet is unreadable without the session keys.
 
-That is the default. Two separate Azure resource groups, separate Virtual Networks, no peering connection between them. The private route does not exist until it is explicitly built.
+Private network connectivity adds a layer on top of encryption. VNet peering routes traffic over the Microsoft backbone so it never reaches a public network; TLS encryption continues to protect the connection end to end across that private path. The two controls are independent: encryption protects against interception anywhere along the route, and network isolation removes the public route entirely. For organizations with compliance requirements that specify both controls, the combination is what makes this architecture worth the additional configuration.
 
-This architecture builds both private routes. Bolt connections from VNet-injected Databricks job clusters traverse a direct VNet peering over the Microsoft backbone. Bolt connections from serverless compute — SQL warehouses, Mosaic AI agent endpoints, Lakeflow pipelines — travel through a Private Link tunnel that stays on the same backbone. No packet leaves the Microsoft network regardless of which compute mode initiates the query.
+This architecture builds both private routes. Bolt connections from VNet-injected Databricks job clusters traverse a direct VNet peering over the Microsoft backbone. Bolt connections from serverless compute — SQL warehouses, Mosaic AI agent endpoints, Lakeflow pipelines — travel through a Private Link tunnel on the same backbone. No packet leaves the Microsoft network regardless of which compute mode initiates the query.
 
 ---
 
-## Graph Topology Is the Sensitive Data
+## Graph Topology Reveals What Individual Records Do Not
 
 Row-level data carries obvious sensitivity: account numbers, diagnosis codes, transaction amounts. Graph data carries a different kind. The relationship topology of a graph encodes meaning that individual records do not. A financial institution's graph knows which customers hold which products, which advisors manage which relationships, which entities share beneficial ownership. The topology is the regulated data, and network controls must apply to every query against it.
 
 Financial services, healthcare, and government operate under data residency and network isolation requirements that make public internet transit a compliance failure regardless of whether the connection is encrypted. Private network connectivity is the requirement.
 
 Serverless compute deserves particular attention here. SQL warehouses are the default compute behind Databricks SQL and interactive notebook queries. Mosaic AI agent deployments run on model serving endpoints, which execute on serverless infrastructure. Lakeflow Spark Declarative Pipelines run serverless. An organization that deploys Neo4j as a knowledge graph for AI agents and assumes job cluster connectivity is sufficient has left the most traffic-intensive path unprotected: agent queries during inference run on serverless, not on a VNet-injected job cluster.
+
+---
+
+## Acronyms
+
+| Acronym | Full Term |
+|---------|-----------|
+| ARM | Azure Resource Manager |
+| CIDR | Classless Inter-Domain Routing |
+| ILB | Internal Load Balancer |
+| NAT | Network Address Translation |
+| NCC | Network Connectivity Configuration |
+| NSG | Network Security Group |
+| PLS | Private Link Service |
+| SCC | Secure Cluster Connectivity |
+| SKU | Stock Keeping Unit |
+| TCP | Transmission Control Protocol |
+| TLS | Transport Layer Security |
+| UDR | User Defined Route |
+| VNet | Virtual Network |
+| VMSS | Virtual Machine Scale Set |
 
 ---
 
@@ -74,11 +95,21 @@ The packet's path from a job cluster to Neo4j is direct: container subnet, VNet 
 
 ---
 
+## Serverless Compute Runs Outside the Customer Network
+
+Classic Databricks job clusters execute on VMs placed inside the customer-owned VNet through VNet injection. The customer controls the network, the NSG rules, and the peering connections. Every packet from a job cluster carries a private IP address from within 192.168.0.0/16, and the peering gives that address a route to the Neo4j subnet.
+
+Serverless compute operates on a different foundation. SQL warehouses, serverless jobs, Lakeflow Spark Declarative Pipelines, and Mosaic AI model serving endpoints all execute on Databricks-managed infrastructure in a Databricks-owned network isolated from the customer's Azure subscription. The customer has no visibility into that network, cannot attach NSGs to it, and cannot peer with it through standard Azure networking.
+
+The workloads that run on serverless infrastructure cover the majority of interactive and production traffic in a Databricks deployment. SQL warehouses are the default compute behind Databricks SQL and interactive notebook queries; when a user opens a notebook and runs a query without starting a job cluster, that query executes on a SQL warehouse. Mosaic AI model serving endpoints are the runtime for AI agents and LLM-backed applications. A Mosaic AI agent that queries a Neo4j knowledge graph during inference runs on model serving infrastructure, which is serverless. Lakeflow pipelines default to serverless. Data quality monitoring and predictive optimization also run on serverless infrastructure.
+
+An organization that deploys the VNet peering path and considers connectivity solved has covered job clusters. The SQL warehouse a data analyst uses to query the graph, the model serving endpoint an AI agent calls during inference, and the Lakeflow pipeline that loads entity relationships all execute outside the customer VNet. None of them can reach the Neo4j ILB through the peering because no route exists from Databricks-managed infrastructure to the customer VNet.
+
+Private Link bridges this gap. A Private Link Service attached to the Neo4j ILB accepts private endpoint connections from outside the customer subscription, and a Network Connectivity Configuration provisions a private endpoint from Databricks-managed infrastructure to that service. The tunnel stays on the Microsoft backbone; the serverless compute node reaches Neo4j without a route to the customer VNet and without traffic leaving the Microsoft network.
+
+---
+
 ## The Private Link Path
-
-### Why Peering Does Not Reach Serverless
-
-VNet peering connects two Virtual Networks. Serverless compute runs in Databricks-managed infrastructure in a Databricks-owned network isolated from the customer's Azure subscription. The Neo4j ILB's private frontend IP is not routable from that network. A connection attempt from a serverless notebook to the ILB sends a TCP SYN into a network the Microsoft backbone cannot route from Databricks-managed infrastructure; the ILB never receives it.
 
 ### Private Link Service
 

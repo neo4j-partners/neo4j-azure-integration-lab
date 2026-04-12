@@ -26,6 +26,9 @@ WORKSPACE_SERVERLESS_PROBE_PATH = "/Shared/neo4j-serverless-probe.py"
 # Probe script lives on disk alongside the classic probe.
 _SERVERLESS_PROBE_PATH = Path(__file__).parent.parent.parent / "notebooks" / "neo4j_serverless_probe.py"
 
+# Timeout configuration.
+_POLL_TIMEOUT_SECONDS = 600    # 10 minutes — serverless skips cluster cold-start
+
 # Ordered check keys matching the probe script output.
 _CHECK_KEYS = [
     ("DNS",      "DNS resolution (from Databricks serverless)"),
@@ -117,10 +120,10 @@ class ServerlessDatabricksChecker(DatabricksCheckerBase):
             return _skipped("Job submission failed")
 
         timed_out, result_state, logs, state_message = self._poll_job(
-            client, run_id, "serverless_probe", timeout_seconds=600
+            client, run_id, "serverless_probe", timeout_seconds=_POLL_TIMEOUT_SECONDS
         )
         if timed_out:
-            return _skipped("Job timed out after 10 minutes")
+            return _skipped(f"Job timed out after {_POLL_TIMEOUT_SECONDS // 60} minutes")
 
         port_results = self._parse_logs(logs)
         return self._results_from_logs(port_results, result_state, state_message, _CHECK_KEYS)

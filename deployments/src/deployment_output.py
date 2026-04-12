@@ -108,7 +108,7 @@ def display_connection_info(details: dict[str, Any], scenario_name: str) -> None
             table.add_row("LB Private IP", conn["lb_private_ip"])
         if conn.get("databricks_bolt_uri"):
             table.add_row("Databricks Bolt URI", conn["databricks_bolt_uri"])
-        if details.get("serverless", {}).get("bolt_uri"):
+        if (details.get("serverless") or {}).get("bolt_uri"):
             table.add_row("Serverless Bolt URI", details["serverless"]["bolt_uri"])
         if conn.get("databricks_workspace_url"):
             table.add_row("Databricks URL", conn["databricks_workspace_url"])

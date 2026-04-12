@@ -25,6 +25,10 @@ DBFS_PROBE_PATH = "dbfs:/neo4j/neo4j_classic_probe.py"
 # and prevents divergence with the copy uploaded by setup-databricks.
 _CLASSIC_PROBE_PATH = Path(__file__).parent.parent.parent / "notebooks" / "neo4j_classic_probe.py"
 
+# Timeout / retry configuration.
+_POLL_TIMEOUT_SECONDS = 900       # 15 minutes for classic cluster cold-start
+_BOLT_RETRY_WAIT_SECONDS = 120    # 2-minute wait before retrying when TCP passes but Bolt fails
+
 # Ordered check keys matching the probe script output.
 _CHECK_KEYS = [
     ("7687",     "Cross-VNet TCP 7687 (from Databricks)"),
@@ -117,10 +121,10 @@ class DatabricksChecker(DatabricksCheckerBase):
             return _skipped("Job submission failed"), {}
 
         timed_out, result_state, logs, state_message = self._poll_job(
-            client, run_id, "tcp_probe", timeout_seconds=900
+            client, run_id, "tcp_probe", timeout_seconds=_POLL_TIMEOUT_SECONDS
         )
         if timed_out:
-            return _skipped("Job timed out after 15 minutes"), {}
+            return _skipped(f"Job timed out after {_POLL_TIMEOUT_SECONDS // 60} minutes"), {}
 
         port_results = self._parse_logs(logs)
         results = self._results_from_logs(port_results, result_state, state_message, _CHECK_KEYS)
@@ -148,10 +152,10 @@ class DatabricksChecker(DatabricksCheckerBase):
         bolt_failed = port_results.get("BOLT", "").startswith("FAIL")
         if tcp_passed and bolt_failed:
             console.print(
-                "[yellow]Bolt failed but TCP passed — Neo4j db likely not yet allocated on "
-                "LB-selected node. Retrying in 2 minutes...[/yellow]"
+                f"[yellow]Bolt failed but TCP passed — Neo4j db likely not yet allocated on "
+                f"LB-selected node. Retrying in {_BOLT_RETRY_WAIT_SECONDS // 60} minutes...[/yellow]"
             )
-            time.sleep(120)
+            time.sleep(_BOLT_RETRY_WAIT_SECONDS)
             console.print(
                 f"[dim]Retry: submitting job (spark={spark_version} node={node_type})"
                 f" — cluster start takes ~3-5 min...[/dim]"
