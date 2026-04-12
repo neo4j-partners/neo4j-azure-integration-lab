@@ -1156,13 +1156,6 @@ def setup_databricks(
         console.print("[red]No databricks_workspace_host in deployment JSON.[/red]")
         raise typer.Exit(1)
 
-    if not token and not profile:
-        console.print(
-            "[red]Provide --token or --profile for Databricks authentication.[/red]\n"
-            "[dim]Generate a PAT: Databricks workspace → User Settings → Developer → Access tokens[/dim]"
-        )
-        raise typer.Exit(1)
-
     try:
         from databricks.sdk import WorkspaceClient
     except ImportError:
@@ -1172,8 +1165,25 @@ def setup_databricks(
     console.print(f"\n[bold]Connecting to:[/bold] https://{workspace_host}")
     if token:
         client = WorkspaceClient(host=workspace_host, token=token)
-    else:
+    elif profile:
         client = WorkspaceClient(profile=profile)
+    else:
+        # Fall back to AAD token from active az login session — same as DatabricksCheckerBase
+        import subprocess as _sp
+        _result = _sp.run(
+            ["az", "account", "get-access-token",
+             "--resource", "2ff814a6-3304-4ab8-85cb-cd0e6f879c1d",
+             "--query", "accessToken", "-o", "tsv"],
+            capture_output=True, text=True, check=False,
+        )
+        aad_token = _result.stdout.strip()
+        if not aad_token:
+            console.print(
+                "[red]No --token or --profile provided and AAD token acquisition failed.[/red]\n"
+                "[dim]Run 'az login' or pass --token / --profile explicitly.[/dim]"
+            )
+            raise typer.Exit(1)
+        client = WorkspaceClient(host=workspace_host, token=aad_token)
 
     scope_name = f"neo4j-{scenario}"
     if notebook_path is None:

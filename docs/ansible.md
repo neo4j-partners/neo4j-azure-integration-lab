@@ -218,3 +218,73 @@ The Neo4j internal load balancer has a private frontend IP (`10.0.0.4` in the de
 **Databricks managed resource group deletion order**
 
 Azure Databricks attaches a system deny assignment to the managed resource group that prevents direct deletion while the workspace exists. Deleting the managed resource group directly returns `DenyAssignmentAuthorizationFailed`. The correct order is workspace resource group first — Azure then removes the deny assignment and auto-deletes the managed group. The CLI enforces this order.
+
+**`initial.dbms.default_primaries_count` must equal `node_count` on cluster deployments**
+
+Neo4j 5.x defaults this setting to `1`, meaning the `neo4j` user database is allocated to a single node at first startup. The `neo4j://` routing protocol hides the gap — the driver queries the routing table and selects a node that actually hosts the database. `bolt://` direct connections do not route, so two of three LB backends return `DatabaseNotFound`. The `cluster.yaml.j2` template sets `initial.dbms.default_primaries_count=${NODE_COUNT}` for this reason. The `initial.*` prefix means the setting is read once at first startup on each node — adding it to `neo4j.conf` on a running cluster has no effect. To reallocate the database on a live cluster, run `ALTER DATABASE neo4j SET TOPOLOGY 3 PRIMARIES` against the `system` database.
+
+---
+
+## Production Security Hardening
+
+The default configuration is tuned for demo and testing use. Before moving to production, review the following.
+
+### Network access
+
+The `standalone-v2025` and `cluster-v2025` scenarios leave all Neo4j ports open to the Internet. The `peer-databricks-v2025` scenario replaces the NSG ruleset after peering, restricting database ports to the Databricks VNet:
+
+| Port | standalone / cluster | After peer-databricks peering |
+|------|----------------------|-------------------------------|
+| 22 (SSH) | Open to Internet | Open to Internet |
+| 7473 (HTTPS / Neo4j Browser) | Open to Internet | Open to Internet |
+| 7474 (HTTP / Neo4j Browser) | Open to Internet | Databricks VNet only |
+| 7687 (Bolt) | Open to Internet | Databricks VNet only |
+| 7688 (Bolt Routing) | Open to Internet | Databricks VNet only |
+
+If you need to restrict the browser UI as well, update the NSG rule for port 7473 in `tasks/nsg_update.yml` to use `databricks_vnet_cidr` as the source address prefix.
+
+### SSH access
+
+Port 22 is open to `Internet` in all NSG configurations. Set `ssh_source_cidr` in your scenario file to restrict SSH to a known CIDR:
+
+```yaml
+ssh_source_cidr: '203.0.113.0/24'
+```
+
+Alternatively, deploy [Azure Bastion](https://learn.microsoft.com/azure/bastion/bastion-overview) in a dedicated subnet and set `ssh_source_cidr` to the Bastion subnet CIDR so only Bastion can SSH to the nodes.
+
+### VMSS public IPs in cluster deployments
+
+Each VMSS instance is assigned a public IP and DNS label even in cluster deployments that sit behind the internal load balancer. For production cluster deployments, set `public_ip_enabled: false` in your scenario file:
+
+```yaml
+public_ip_enabled: false
+```
+
+When `public_ip_enabled` is `false`, individual nodes are accessible only via Azure Bastion or an SSH tunnel through another host. The internal load balancer is unaffected.
+
+### HTTP connector (port 7474)
+
+The cloud-init templates explicitly enable `server.http.listen_address=0.0.0.0:7474`. For production, disable the HTTP connector and serve the Neo4j Browser exclusively over HTTPS (7473) by setting `enable_http: false` in your scenario file:
+
+```yaml
+enable_http: false
+```
+
+**Not safe for cluster deployments yet.** The load balancer health probe (`httpprobe`) does an HTTP GET on port 7474. When `enable_http` is `false`, the probe gets no response, the LB marks all backends unhealthy, and Bolt connections on 7687 receive TCP RST even though Neo4j is running. `enable_http: false` is safe for **standalone** deployments where no load balancer is involved. For clusters, an HTTPS probe on port 7473 (or a dedicated health endpoint) would need to be added before this is usable.
+
+### Browser and Bloom authentication bypass
+
+The cloud-init templates set `dbms.security.http_auth_allowlist=/,/browser.*,/bloom.*`, which allows the Neo4j Browser UI and Bloom to be accessed without authentication headers. This is intended for evaluation use. For production, remove this line from both `playbooks/templates/standalone.yaml.j2` and `playbooks/templates/cluster.yaml.j2`.
+
+### SELinux set to permissive
+
+The cloud-init scripts set SELinux to `permissive` mode (`setenforce 0`) to simplify the Neo4j installation. In permissive mode, SELinux logs policy violations but does not enforce them. For production deployments on RHEL/CentOS-based images, configure a proper Neo4j SELinux policy and restore `enforcing` mode.
+
+### License type
+
+All default scenarios use `license_type: Enterprise`. Confirm that you have a valid Neo4j Enterprise license before deploying to production — Evaluation licenses are time-limited and not permitted for production use.
+
+### VM patching
+
+The VMSS upgrade policy is `Manual`. OS and Neo4j package updates must be applied manually via a rolling instance upgrade. For production, establish a patching schedule and test upgrades in a lower environment first — Neo4j cluster upgrades must follow a specific rolling procedure to avoid downtime.

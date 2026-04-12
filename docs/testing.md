@@ -155,3 +155,41 @@ uv run neo4j-connect check --scenario peer-databricks-v2025 \
 ```bash
 uv run neo4j-connect check --scenario peer-databricks-v2025 --checks vnet || exit 1
 ```
+
+---
+
+## Unit tests
+
+Unit tests cover the pure Python logic in the deployment tools. No Azure session, subscription, or deployed infrastructure is required.
+
+```bash
+cd deployments
+uv run pytest
+```
+
+### What is covered
+
+**`tests/test_deployment_output.py`** — Tests the shared JSON schema used by both the Bicep and Ansible engines.
+
+| Area | What is verified |
+|---|---|
+| Model defaults | Each field in `ConnectionJSON`, `SSHJSON`, `ConfigurationJSON`, `NetworkJSON` initialises to the correct default |
+| Nested model isolation | Two `DeploymentJSON` instances do not share nested model objects |
+| `write_deployment_json` | Output file is valid JSON, is pretty-printed, creates missing parent directories, and overwrites cleanly on re-runs |
+| Null field serialisation | Optional fields serialise to `null` rather than being omitted, so the schema stays consistent across engines |
+| `display_connection_info` | Renderer handles all deployment states without raising: standalone, cluster, partial, Databricks peering, serverless Bolt URI |
+
+**`tests/test_password.py`** — Tests password generation, environment variable reading, and prompt validation.
+
+| Area | What is verified |
+|---|---|
+| Generated passwords | Always 24 characters, contain all four complexity categories, use only allowed characters |
+| Caching | The same password is returned across multiple `get_password` calls; `clear_cache` resets state |
+| Environment strategy | Reads `NEO4J_ADMIN_PASSWORD`; raises `ValueError` when the variable is unset or empty; warns when shorter than 12 characters |
+| Prompt validation | Raises on empty, too-short (< 12), and too-long (> 72) input; rejects passwords with fewer than three complexity categories; accepts passwords at the exact boundaries (12 and 72 characters) |
+
+### When to run
+
+Run unit tests after any change to `src/deployment_output.py` or `src/password.py`, and before opening a pull request. They complete in under a second and require only `uv sync`.
+
+The connectivity checks in the sections above require a completed deployment and an active Azure session. Unit tests have no such dependency and can run offline.

@@ -36,6 +36,8 @@ Python CLI (`bicep-deploy`) backed by Azure Bicep templates. Covers setup, deplo
 
 See [docs/bicep.md](docs/bicep.md) for full details.
 
+> **Production use:** Review the [Production Security Hardening](docs/bicep.md#production-security-hardening) section before deploying to a production environment.
+
 ### Testing Databricks Connectivity
 
 After deploying the `peer-databricks-v2025` scenario:
@@ -52,6 +54,8 @@ See [docs/databricks-validate.md](docs/databricks-validate.md) for the full walk
 Ansible playbooks for deploying Neo4j on Azure VM Scale Sets. Supports standalone, cluster, and cluster-with-Databricks scenarios via a lightweight `ansible-deploy` CLI.
 
 See [docs/ansible.md](docs/ansible.md) for full details.
+
+> **Production use:** Review the [Production Security Hardening](docs/ansible.md#production-security-hardening) section before deploying to a production environment.
 
 ### Testing Databricks Connectivity
 

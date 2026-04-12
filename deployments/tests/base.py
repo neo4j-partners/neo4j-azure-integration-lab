@@ -5,7 +5,7 @@ Shared types and Azure CLI helpers used by all connectivity test modules.
 import subprocess
 from dataclasses import dataclass, field
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from rich.console import Console
 
 console = Console()
@@ -18,6 +18,11 @@ class _DeploymentConnection(BaseModel):
     databricks_workspace_host: str = ""
     username: str = "neo4j"
     password: str = ""
+
+    @field_validator("databricks_workspace_host", mode="before")
+    @classmethod
+    def _coerce_workspace_host(cls, v):
+        return v if v is not None else ""
 
 
 class _ServerlessConfig(BaseModel):
@@ -34,6 +39,16 @@ class DeploymentProfile(BaseModel):
     databricks_resource_group: str = ""
     connection: _DeploymentConnection = Field(default_factory=_DeploymentConnection)
     serverless: _ServerlessConfig = Field(default_factory=_ServerlessConfig)
+
+    @field_validator("databricks_resource_group", mode="before")
+    @classmethod
+    def _coerce_dbx_rg(cls, v):
+        return v if v is not None else ""
+
+    @field_validator("serverless", mode="before")
+    @classmethod
+    def _coerce_serverless(cls, v):
+        return v if v is not None else _ServerlessConfig()
 
     @property
     def effective_neo4j_rg(self) -> str:
