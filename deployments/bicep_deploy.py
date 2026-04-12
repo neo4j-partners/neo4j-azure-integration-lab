@@ -674,6 +674,12 @@ def deploy(
 
         # Create deployment state
         is_sub_scoped = s.deployment_type.value == "databricks-peering"
+        databricks_rg = None
+        if is_sub_scoped:
+            import json as _json
+            with open(param_file) as _f:
+                _params = _json.load(_f)
+            databricks_rg = _params.get("parameters", {}).get("databricksResourceGroup", {}).get("value")
         state = DeploymentState(
             deployment_id=deployment_id,
             resource_group_name=rg_name,
@@ -684,6 +690,7 @@ def deploy(
             cleanup_mode=cleanup,
             status="pending",
             subscription_scoped=is_sub_scoped,
+            databricks_resource_group=databricks_rg,
         )
 
         # Save initial state

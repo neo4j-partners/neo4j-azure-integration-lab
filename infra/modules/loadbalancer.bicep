@@ -112,6 +112,12 @@ resource loadBalancer 'Microsoft.Network/loadBalancers@2025-03-01' = if (loadBal
         }
       }
     ]
+    // All three load-balancing rules (7474, 7687, 7688) share a single HTTP probe on port 7474.
+    // TCP probes on ports 7687/7688 were removed: Neo4j 2026.x completes the TCP handshake on
+    // 7687 before sending a Bolt banner, so a raw TCP probe technically passes, but HTTP/7474
+    // gives a cleaner health signal — all three rules are gated on the same condition (Neo4j is
+    // serving HTTP). With enableTcpReset: true on every rule, a failed probe causes the LB to
+    // send TCP RST to connecting clients rather than silently timing out.
     probes: [
       {
         name: 'httpprobe'

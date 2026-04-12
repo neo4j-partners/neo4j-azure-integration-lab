@@ -242,6 +242,14 @@ class CleanupManager:
         success = self.rg_manager.delete_resource_group(rg_name, no_wait=no_wait)
 
         if success:
+            # For databricks-peering deployments, also delete the Databricks customer RG.
+            # The Databricks managed RG (-managed suffix) is auto-deleted by Azure once
+            # the workspace RG is gone, so we only need to delete the customer RG here.
+            if deployment.databricks_resource_group:
+                dbx_rg = deployment.databricks_resource_group
+                console.print(f"[yellow]Deleting Databricks resource group: {dbx_rg}[/yellow]")
+                self.rg_manager.delete_resource_group(dbx_rg, no_wait=no_wait)
+
             # Update state to mark as deleted
             deployment.status = "deleted"  # type: ignore
             self.rg_manager.save_deployment_state(deployment)

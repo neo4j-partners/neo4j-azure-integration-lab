@@ -41,6 +41,7 @@
         password_base64: "{{ admin_password | b64encode }}"
         load_balancer_condition: "{{ (node_count | int) >= 3 }}"
         cloud_init_template_file: "{{ 'standalone.yaml.j2' if (node_count | int) == 1 else 'cluster.yaml.j2' }}"
+        disable_http_config: "{{ '' if (enable_http | bool) else 'server.http.enabled=false' }}"
 
     - name: Render cloud-init template
       ansible.builtin.set_fact:
@@ -69,3 +70,6 @@
           lb_private_ip: "{{ lb_private_ip }}"
           resource_group: "{{ resource_group }}"
           resource_suffix: "{{ resource_suffix }}"
+          neo4j_browser_url: "{{ 'http://vm000000.neo4j-' + resource_suffix + '.' + location + '.cloudapp.azure.com:7474' if (public_ip_enabled | bool) else '' }}"
+          ssh_hostname: "{{ 'vm000000.neo4j-' + resource_suffix + '.' + location + '.cloudapp.azure.com' if (public_ip_enabled | bool) else '' }}"
+          ssh_command: "{{ 'ssh ' + admin_username + '@vm000000.neo4j-' + resource_suffix + '.' + location + '.cloudapp.azure.com' if (public_ip_enabled | bool) else '' }}"

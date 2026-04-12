@@ -108,6 +108,11 @@ resource networkSG 'Microsoft.Network/networkSecurityGroups@2025-03-01' = {
           direction: 'Inbound'
         }
       }
+      // AzureLoadBalancerProbe must be present or the Standard ILB health probes cannot reach
+      // the VMSS instances. If absent the LB marks all backends unhealthy and sends TCP RST to
+      // all inbound connections (enableTcpReset: true on every LB rule). This rule must be
+      // explicitly re-added whenever the NSG ruleset is fully replaced (e.g. during Databricks
+      // peering), because a full PUT that omits it leaves the LB probe path blocked.
       {
         name: 'AzureLoadBalancerProbe'
         properties: {
@@ -144,6 +149,10 @@ resource vnet 'Microsoft.Network/virtualNetworks@2025-03-01' = {
           }
         }
       }
+      // pls-subnet must be outside the main subnet's /16 block (10.0.0.0/16). An address inside
+      // that range causes Azure to reject the VNet with a subnet overlap conflict. 10.1.0.0/28
+      // is within the VNet's /8 address space but clear of the /16. The /28 provides 11 usable
+      // addresses — Azure recommends at least 8 NAT IPs for Private Link Service capacity.
       {
         name: 'pls-subnet'
         properties: {

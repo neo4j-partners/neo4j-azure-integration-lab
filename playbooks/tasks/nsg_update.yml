@@ -15,7 +15,7 @@
         protocol: Tcp
         source_port_range: "*"
         destination_port_range: "22"
-        source_address_prefix: Internet
+        source_address_prefix: "{{ ssh_source_cidr }}"
         destination_address_prefix: "*"
         access: Allow
         priority: 100

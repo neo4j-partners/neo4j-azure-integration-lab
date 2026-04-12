@@ -225,6 +225,26 @@ uv run bicep-deploy deploy --scenario peer-databricks-v2025
 
 See [databricks-validate.md](databricks-validate.md) for the interactive notebook workflow and `setup-ncc` reference. See [testing.md](testing.md) for the full `neo4j-connect` check reference including the classic topology check, serverless DNS resolution, TCP 7474 verification, and parallel job execution.
 
+## Load balancer and NSG design notes
+
+These notes capture non-obvious behaviors that were confirmed during live deployments. They are relevant whenever the load balancer or NSG configuration is modified.
+
+**All LB probes use HTTP on port 7474, not TCP on the Bolt ports**
+
+The `inbound7687` and `inbound7688` load-balancing rules both reference `httpprobe` (HTTP GET on port 7474) rather than separate TCP probes on 7687/7688. This was an explicit design choice. Neo4j 2026.x completes the TCP handshake on port 7687 before sending a Bolt protocol banner, so a raw TCP probe would technically record a SYN-ACK and pass. However, using `httpprobe` for all three rules gives a single, unambiguous health gate: if Neo4j is serving HTTP on 7474 it is ready to serve Bolt, and all three rules flip together. Keeping separate TCP probes on 7687/7688 adds probe surface area with no benefit.
+
+**`enableTcpReset: true` and `errno 111`**
+
+Every LB rule has `enableTcpReset: true`. When a probe fails and the LB marks all backends unhealthy, it sends a TCP RST to clients rather than silently dropping packets. Clients receive `errno 111` (Connection refused) instead of a timeout. This is faster feedback, but it means a transient probe failure — such as a brief gap when the NSG ruleset is replaced during Databricks peering — produces a hard error rather than a slow one. The Bicep deployment keeps the `AzureLoadBalancerProbe` NSG allow rule across all NSG states so this window is minimised.
+
+**`AzureLoadBalancerProbe` NSG rule must always be present**
+
+The Standard ILB health probe traffic originates from the `AzureLoadBalancer` service tag. If the NSG does not have an Allow rule for this source, probes never reach the VMSS instances. The LB then marks all backends unhealthy and RSTs every inbound connection. This rule must survive any full NSG replacement during Databricks peering — verify that the updated NSG still contains an Allow rule for `AzureLoadBalancer` before testing connectivity.
+
+**Databricks Serverless compute cannot reach the private LB IP**
+
+The Neo4j internal load balancer has a private frontend IP (`10.0.0.4` in the default address space). Databricks Serverless compute runs on Databricks-managed infrastructure outside the customer subscription — it is not VNet-injected and has no route to private RFC-1918 addresses. Connecting from a Serverless notebook to the LB private IP returns `errno 111` regardless of NSG or peering configuration. The connectivity notebook must run on a **VNet-injected all-purpose cluster**: in the workspace, create a new cluster using Standard (not Serverless) compute. The workspace VNet injection settings propagate automatically, giving the cluster a route to the Neo4j VNet via the VNet peering.
+
 ## Production Security Hardening
 
 The default configuration is tuned for demo and testing use. Before moving to production, review the following.

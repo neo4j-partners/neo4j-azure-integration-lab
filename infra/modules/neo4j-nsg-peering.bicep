@@ -7,6 +7,15 @@ resource networkSG 'Microsoft.Network/networkSecurityGroups@2025-03-01' = {
   name: nsgName
   location: location
   properties: {
+    // Every Neo4j port rule in this module — 7473, 7474, 7687, 7688 — must reference
+    // databricksCidr, not 'Internet'. After the peering deployment all four ports are
+    // private-only; a hardcoded 'Internet' source on any one of them leaves that port
+    // publicly reachable and defeats the purpose of the peering NSG. Port 7473 (HTTPS)
+    // was originally misconfigured with 'Internet' — do not revert it.
+    //
+    // AzureLoadBalancerProbe must be present or the Standard ILB health probes cannot reach
+    // the VMSS instances. If absent the LB marks all backends unhealthy and RSTs every
+    // inbound connection. This rule must survive every full NSG replacement.
     securityRules: [
       {
         name: 'SSH'

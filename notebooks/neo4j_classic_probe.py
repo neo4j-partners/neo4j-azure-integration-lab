@@ -21,6 +21,9 @@ driver = None
 try:
     from neo4j import GraphDatabase
     driver = GraphDatabase.driver(bolt_uri, auth=(username, password))
+    # database="neo4j" is required. Without it the driver triggers a home-database
+    # resolution step in Neo4j 5.x. During early cluster startup that step can fail
+    # with DatabaseNotFound even though the database exists, causing a false FAIL.
     with driver.session(database="neo4j") as session:
         session.run("RETURN 1").consume()
     print("PASS:BOLT")

@@ -13,10 +13,14 @@ The design centers on VNet injection: placing the Databricks compute plane into 
 - A Databricks workspace (Standard SKU) deployed with VNet injection into the customer-managed VNet, with Secure Cluster Connectivity enabled so cluster nodes carry no public IP addresses
 - Bidirectional VNet peering connecting the Neo4j VNet (10.0.0.0/8) and the Databricks VNet (192.168.0.0/16) across two resource groups in the same subscription and region
 - A three-node Neo4j Enterprise Edition cluster deployed as a VM Scale Set with cluster discovery enabled
-- An internal Standard SKU load balancer with a private frontend IP allocated from the Neo4j subnet, fronting the three-node cluster with no public IP attached
+- A Standard SKU internal load balancer (ILB) fronting the three-node cluster, with a private frontend IP allocated from the Neo4j subnet and no public IP. An ILB is reachable only from within the same VNet or through an explicitly established private path; it is not accessible from the internet.
 - An NSG update on the Neo4j side that replaces the Internet-open inbound rules for ports 7473, 7474, 7687, and 7688 with rules scoped to the Databricks CIDR, plus a deny-all rule from that CIDR at priority 200
+- A Private Link Service (PLS) attached to the ILB frontend, deployed with a NAT IP on a dedicated `pls-subnet` (`10.1.0.0/28`), that exposes the ILB to private endpoint connections from Databricks-managed serverless infrastructure without requiring a VNet peering on the Databricks side
+- A Network Connectivity Configuration (NCC), an account-level Azure Databricks resource that provisions a private endpoint from Databricks-managed infrastructure to the PLS and routes serverless compute traffic through it
 
-The result is a Databricks cluster that can open a Neo4j Bolt session over a private IP address with all traffic traveling on the Microsoft network backbone.
+The result is a Databricks workspace where VNet-injected job clusters reach Neo4j directly over the peering, and serverless notebooks reach the same cluster through the Private Link tunnel. Both paths terminate at the same ILB and the same three-node VMSS backend pool.
+
+VNet-injected job clusters require no configuration beyond what the components above already provide. Databricks serverless compute runs on Databricks-managed infrastructure outside the customer VNet and has no route to the ILB's private frontend IP; VNet peering cannot bridge that gap because there is no customer-owned VNet on the serverless side. The PLS and NCC together create the private tunnel that serverless requires. They are provisioned by `uv run bicep-deploy setup-ncc` after the cluster and Databricks workspace are deployed.
 
 Two deployment tools in this repository produce this architecture: Bicep templates under `infra/` and Ansible playbooks under `playbooks/`. They are equivalent; pick whichever fits your operational preference. See the [Deployment](#deployment) section at the bottom of this document for the file layout of each path.
 
@@ -40,7 +44,7 @@ Azure Subscription
 ├── Resource Group: neo4j-rg
 │   ├── VNet  (e.g. 10.0.0.0/8)
 │   │   └── Subnet  (e.g. 10.0.0.0/16)
-│   │       ├── Internal Load Balancer  (Standard SKU, private frontend IP, no public IP)
+│   │       ├── Internal Load Balancer (ILB)  (Standard SKU, private frontend IP, no public IP)
 │   │       └── Neo4j VMSS  (3 nodes: vm0, vm1, vm2)
 │   └── NSG  (attached to Neo4j subnet)
 │       ├── Allow  7687, 7473, 7474, 7688  from Databricks CIDR  (priority 101-106)
@@ -144,15 +148,61 @@ Several properties follow from using a private CIDR as the source.
 
 **The Databricks side needs no matching configuration.** The Databricks-managed NSGs on the host and container subnets are delegated to `Microsoft.Databricks/workspaces`, and the default rule set managed by the service permits outbound traffic across the peering. Once both peering connections reach Connected, the effective routes on the Databricks subnets include the Neo4j VNet range, and the Bolt client in a notebook reaches the Neo4j private IP directly with no additional Databricks-side rules, routes, or allowlists.
 
+### Serverless Compute and the Peering Gap
+
+VNet peering connects two customer-owned Virtual Networks over the Microsoft backbone. A Databricks job cluster running with VNet injection sits inside the customer-managed VNet (`192.168.0.0/16`); the peering gives it a route to `10.0.0.0/8`, and the NSG allow rules open the Neo4j ports to that CIDR. The path works because the cluster VM has an address inside a network the customer controls.
+
+Databricks serverless compute does not run inside a customer VNet. Serverless notebooks and SQL warehouses execute on Databricks-managed infrastructure in a Databricks-owned network isolated from the customer's Azure subscription. There is no customer-owned VNet to peer with and no route from the serverless compute plane to the Neo4j ILB's private frontend IP. A connection attempt from a serverless notebook to `10.0.0.4:7687` sends a TCP SYN into a network the Microsoft backbone cannot route from Databricks-managed infrastructure; the ILB never sees it.
+
+Azure Private Link bridges these two network domains without requiring a customer-owned VNet on the Databricks side. The mechanism has two components: a Private Link Service deployed in the Neo4j resource group and a Network Connectivity Configuration provisioned through the Databricks account API.
+
+### Private Link Service
+
+A Private Link Service (`Microsoft.Network/privateLinkServices`) wraps the Standard ILB frontend and exposes it for private endpoint connections from outside the customer VNet, including Databricks-managed infrastructure. When a private endpoint connects to the PLS, Azure builds a tunnel on the Azure backbone between the endpoint's network interface and the PLS. All traffic through that tunnel stays on the Microsoft network; it does not traverse the public internet.
+
+The PLS requires a dedicated subnet where `privateLinkServiceNetworkPolicies` is set to `Disabled`. This flag exempts traffic associated with Private Link resources from NSG and UDR enforcement on that subnet. Microsoft recommends a `/28` for this purpose. This template adds a second subnet to the Neo4j VNet (`10.1.0.0/28`, named `pls-subnet`) and allocates one NAT IP configuration from it. Traffic arriving at the Neo4j VMSS through the Private Link path carries the NAT IP as its source address; the existing default `VirtualNetwork` allow rule at priority 65000 covers it, because `10.1.0.0/28` falls within the Neo4j VNet. No new NSG rules are required.
+
+The Standard SKU ILB is the prerequisite for hosting a Private Link Service. The PLS attaches to the existing ILB frontend and shares the backend pool and health probe rules with the VNet-peered path. No additional ILB configuration is required.
+
+The PLS `visibility.subscriptions` controls which Azure subscriptions can see and request a connection. The current deployment sets this to `['*']`, which allows any Azure subscription to initiate a connection request. Azure Private Link does support scoping visibility to a named list of subscription IDs. Restricting to the specific Databricks-managed subscription that creates the private endpoint would tighten the posture, but that subscription ID is not published by Databricks and must be captured from a live connection (see `worklog/serverless-testing.md`). Regardless of visibility setting, no connection carries traffic until approved: the approval step is the access control gate, not visibility.
+
+### Network Connectivity Configuration
+
+A Network Connectivity Configuration is an account-level Azure Databricks resource that defines the network policy for serverless compute. It is separate from VNet injection, which governs where job cluster VMs are placed; an NCC governs where serverless compute sends its traffic.
+
+NCCs are created at the Databricks account level and are region-scoped: an NCC created in East US 2 creates private endpoint connections in East US 2. Each Azure Databricks account supports up to ten NCCs per region. A single NCC can attach to up to fifty workspaces. The private endpoints that an NCC creates are dedicated to the Databricks account and accessible only from workspaces the NCC is attached to.
+
+When a Private Endpoint Rule is added to an NCC, Databricks provisions a private endpoint from its managed infrastructure to the target Azure resource. For a custom Private Link Service (a `Microsoft.Network/privateLinkServices` resource, as opposed to a first-party service like Storage or SQL), the rule specifies the PLS ARM resource ID. The private endpoint request appears on the PLS as a connection in `Pending` state. It stays in that state until the customer approves it, at which point the NCC rule transitions to `ESTABLISHED` and serverless compute can use the path.
+
+### Provisioning Sequence
+
+Private Link connectivity for serverless requires two phases corresponding to the two deployment steps in this repository.
+
+The first phase runs during the Neo4j cluster deployment. When `nodeCount >= 3`, the Bicep orchestrator deploys the load balancer module, which creates both the Standard ILB and the Private Link Service. The `pls-subnet` (`10.1.0.0/28`) is created by the network module at the same time. The PLS resource ID is written to the deployment output JSON (`peer-databricks-v2025-bicep.json`) for use in the second phase.
+
+The second phase runs via `uv run bicep-deploy setup-ncc --scenario peer-databricks-v2025`. This command reads the PLS resource ID from the deployment JSON, then: creates or reuses an NCC scoped to the workspace region; attaches the NCC to the Databricks workspace; creates a Private Endpoint Rule pointing at the PLS resource ID; polls the PLS for a connection in `Pending` state; approves the connection programmatically via the Azure CLI; and waits for the NCC rule to reach `ESTABLISHED`. The entire sequence is unattended and idempotent: re-running it after a partial failure skips steps already completed.
+
+The approval step requires the Azure CLI identity to have write access on the Neo4j resource group. It is programmatic but deliberate: no traffic flows through the Private Link path until a customer with resource-group write access explicitly approves the Databricks-initiated connection. This holds true regardless of the PLS visibility setting.
+
+### Driver Protocol for Serverless Compute
+
+Serverless notebooks connecting through the Private Link path should use `bolt://` (direct mode) rather than `neo4j://` (routing mode). Whether `neo4j://` can succeed over this path requires live validation; see `worklog/serverless-testing.md`.
+
+The constraint arises from how routing mode works. A `neo4j://` connection triggers a ROUTE request, and the cluster responds with a routing table listing the advertised addresses of each cluster member: the private IPs assigned to the three VMSS instances (`10.0.0.x`). The driver then opens separate direct TCP connections to those addresses to distribute reads and writes. From serverless infrastructure, only the ILB frontend IP is reachable through the Private Link tunnel. The VMSS node IPs are not routable from Databricks-managed infrastructure, so the direct connections fail and the driver cannot complete session establishment.
+
+`bolt://<lb-frontend-ip>:7687` skips the routing table entirely. The driver sends all queries over a single connection to the ILB, which distributes them across the VMSS backend pool. The tradeoff is that the driver has no cluster topology awareness: it does not direct writes to the leader or reads to followers, and it does not perform client-side failover.
+
+VNet-injected job clusters are not subject to this constraint. The peering makes the entire `10.0.0.0/8` address space routable from the Databricks container subnet, so a job cluster can fetch the routing table, receive the individual VMSS node IPs, and open direct connections to each. Classic compute uses `neo4j://` and gets full cluster-aware driver behavior. Serverless compute uses `bolt://` and treats the ILB as a single endpoint.
+
 ---
 
 ## The Private Path in Practice
 
-Once both peering connections show Connected and the NSG update is in place, a Databricks notebook running on any cluster in the workspace can open a Neo4j driver session using the internal load balancer's private frontend IP. The driver targets `neo4j://<lb-private-ip>:7687`. The packet leaves the cluster node's container subnet, traverses the VNet peering, arrives at the Neo4j subnet, passes the NSG inbound check (the source address falls within the Databricks CIDR, which the allow rule for port 7687 covers), reaches the LB frontend, and is forwarded by the LB backend rule to one of the three Neo4j cluster nodes.
+Once both peering connections show Connected and the NSG update is in place, a Databricks notebook running on any cluster in the workspace can open a Neo4j driver session using the ILB's private frontend IP. The driver targets `neo4j://<lb-private-ip>:7687`. The packet leaves the cluster node's container subnet, traverses the VNet peering, arrives at the Neo4j subnet, passes the NSG inbound check (the source address falls within the Databricks CIDR, which the allow rule for port 7687 covers), reaches the ILB frontend, and is forwarded by the ILB backend rule to one of the three Neo4j cluster nodes.
 
 The full round-trip stays on the Microsoft network backbone. The NSG at the Neo4j subnet boundary is the only access control gate between the cluster and the database.
 
-`driver.verify_connectivity()` succeeds over this path, and Cypher queries execute against the graph from the notebook without any traffic leaving the Microsoft network. The LB private frontend IP is retrievable via `az network lb frontend-ip list` against the Neo4j resource group.
+`driver.verify_connectivity()` succeeds over this path, and Cypher queries execute against the graph from the notebook without any traffic leaving the Microsoft network. The ILB private frontend IP is retrievable via `az network lb frontend-ip list` against the Neo4j resource group.
 
 ---
 
@@ -174,7 +224,9 @@ The full round-trip stays on the Microsoft network backbone. The NSG at the Neo4
 
 **Secure Cluster Connectivity (SCC).** A Databricks workspace configuration (also called No Public IP or NPIP) in which cluster VMs are assigned no public IP addresses. All control-plane communication flows through a Databricks relay service over a secure tunnel that the cluster node initiates outbound. Inbound connections from the Databricks control plane never traverse a public network path. SCC requires a NAT gateway or equivalent outbound path for the cluster nodes to reach the Databricks relay endpoints.
 
-**Bolt Protocol.** The binary wire protocol used by Neo4j drivers to communicate with Neo4j instances. Bolt runs over TCP on port 7687 by default. The `bolt://` URI scheme establishes a direct connection to a single Neo4j instance; the `neo4j://` URI scheme requests a routing table from the server and distributes reads and writes across cluster members. For a three-node cluster behind an internal load balancer, use `neo4j://` pointed at the LB's private frontend IP. The driver sends an initial routing request through the LB, receives a routing table listing all three cluster members, and then distributes reads and writes directly to those members. Using `bolt://` to a single node IP bypasses the LB and the routing table entirely, so it is not used in cluster deployments.
+**Internal Load Balancer (ILB).** An Azure Standard Load Balancer configured with a private frontend IP allocated from a VNet subnet rather than a public IP. An ILB is not reachable from the internet; it accepts connections only from within the same VNet or from a network that has an explicitly established private path to it, such as a VNet peering or a Private Link Service. This is the correct choice for Neo4j cluster access because the database should never be exposed directly to the internet. An external (internet-facing) load balancer would carry a public IP and bypass the NSG boundary that restricts access to the Databricks address space. Azure requires the Standard SKU for ILBs that host a Private Link Service; the Basic SKU does not support it.
+
+**Bolt Protocol.** The binary wire protocol used by Neo4j drivers to communicate with Neo4j instances. Bolt runs over TCP on port 7687 by default. The `bolt://` URI scheme establishes a direct connection to a single Neo4j instance; the `neo4j://` URI scheme requests a routing table from the server and distributes reads and writes across cluster members. For a VNet-injected job cluster with access to the full Neo4j VNet, use `neo4j://` pointed at the ILB's private frontend IP. The driver sends an initial routing request through the ILB, receives a routing table listing all three cluster members, and then distributes reads and writes directly to those members. For serverless compute connecting through the Private Link path, use `bolt://` pointed at the ILB's private frontend IP; the individual VMSS node IPs in the routing table are not routable from serverless infrastructure, so routing mode cannot be used.
 
 ---
 

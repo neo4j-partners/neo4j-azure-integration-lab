@@ -12,20 +12,13 @@
         private_ip_allocation_method: Dynamic
     backend_address_pools:
       - name: backend
+    # All three LB rules share a single HTTP probe on port 7474. TCP probes on ports 7687/7688
+    # were tried and removed: Neo4j completes the TCP handshake on 7687 before the Bolt banner,
+    # so a raw TCP probe technically passes, but HTTP/7474 gives a cleaner health signal — all
+    # three rules are gated on the same condition. With enable_tcp_reset: true on every rule,
+    # a failed probe causes the LB to send TCP RST to clients rather than timing out silently.
     probes:
       - name: httpprobe
-        protocol: Http
-        port: 7474
-        request_path: /
-        interval: 5
-        fail_count: 1
-      - name: boltprobe
-        protocol: Http
-        port: 7474
-        request_path: /
-        interval: 5
-        fail_count: 1
-      - name: boltroutingprobe
         protocol: Http
         port: 7474
         request_path: /
@@ -49,7 +42,7 @@
         backend_port: 7687
         protocol: Tcp
         backend_address_pool: backend
-        probe: boltprobe
+        probe: httpprobe
         idle_timeout: 4
         enable_floating_ip: false
         disable_outbound_snat: true
@@ -60,7 +53,7 @@
         backend_port: 7688
         protocol: Tcp
         backend_address_pool: backend
-        probe: boltroutingprobe
+        probe: httpprobe
         idle_timeout: 4
         enable_floating_ip: false
         disable_outbound_snat: true

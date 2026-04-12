@@ -138,22 +138,8 @@ class DatabricksChecker:
                 results[port] = f"FAIL: {msg}"
         return results
 
-    def check_cross_vnet_tcp(self) -> list[TestResult]:
-        client = self._get_client()
-        if not client:
-            return _skipped("No Databricks client")
-
-        try:
-            self._ensure_probe_script(client)
-        except Exception as e:
-            return _skipped(f"DBFS upload failed: {e}")
-
-        spark_version, node_type = self._get_cluster_params(client)
-        console.print(
-            f"[dim]Submitting job (spark={spark_version} node={node_type})"
-            f" — cluster start takes ~3-5 min...[/dim]"
-        )
-
+    def _run_probe_job(self, client, spark_version: str, node_type: str) -> tuple[list[TestResult], dict[str, str]]:
+        """Submit, poll, and parse one probe job run. Returns (results, port_results)."""
         from databricks.sdk.service import compute, jobs
         try:
             submitted = client.jobs.submit(
@@ -177,11 +163,12 @@ class DatabricksChecker:
             run_id = submitted.run_id
             console.print(f"[dim]Job submitted run_id={run_id}, polling...[/dim]")
         except Exception as e:
-            return _skipped(f"Job submission failed: {e}")
+            return _skipped(f"Job submission failed: {e}"), {}
 
         from databricks.sdk.service.jobs import RunLifeCycleState, RunResultState
         deadline = time.time() + 900
         results: list[TestResult] = []
+        port_results: dict[str, str] = {}
 
         while time.time() < deadline:
             try:
@@ -223,6 +210,40 @@ class DatabricksChecker:
             time.sleep(20)
         else:
             results = _skipped("Job timed out after 15 minutes")
+
+        return results, port_results
+
+    def check_cross_vnet_tcp(self) -> list[TestResult]:
+        client = self._get_client()
+        if not client:
+            return _skipped("No Databricks client")
+
+        try:
+            self._ensure_probe_script(client)
+        except Exception as e:
+            return _skipped(f"DBFS upload failed: {e}")
+
+        spark_version, node_type = self._get_cluster_params(client)
+        console.print(
+            f"[dim]Submitting job (spark={spark_version} node={node_type})"
+            f" — cluster start takes ~3-5 min...[/dim]"
+        )
+
+        results, port_results = self._run_probe_job(client, spark_version, node_type)
+
+        tcp_passed = port_results.get("7687") == "PASS" and port_results.get("7474") == "PASS"
+        bolt_failed = port_results.get("BOLT", "").startswith("FAIL")
+        if tcp_passed and bolt_failed:
+            console.print(
+                "[yellow]Bolt failed but TCP passed — Neo4j db likely not yet allocated on "
+                "LB-selected node. Retrying in 2 minutes...[/yellow]"
+            )
+            time.sleep(120)
+            console.print(
+                f"[dim]Retry: submitting job (spark={spark_version} node={node_type})"
+                f" — cluster start takes ~3-5 min...[/dim]"
+            )
+            results, _ = self._run_probe_job(client, spark_version, node_type)
 
         return results
 

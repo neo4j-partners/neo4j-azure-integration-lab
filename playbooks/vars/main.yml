@@ -12,6 +12,9 @@ license_type: Enterprise          # Enterprise | Evaluation
 location: ""                      # required at runtime
 oidc_config: "none"
 resource_group: ""                # required at runtime
+ssh_source_cidr: Internet         # restrict to a known CIDR for production (e.g. 203.0.113.0/24)
+public_ip_enabled: true           # set to false for clusters where the LB is the only entry point
+enable_http: true                 # set to false to serve the browser exclusively over HTTPS (7473)
 
 # Resource naming (mirrors Bicep convention; resource_suffix is computed at runtime)
 nsg_name: "nsg-neo4j-{{ location }}-{{ resource_suffix }}"

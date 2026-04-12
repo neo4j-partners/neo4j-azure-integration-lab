@@ -3,6 +3,11 @@
   ansible.builtin.set_fact:
     vmss_user_assigned_identities: "{{ {neo4j_identity_id: {}} }}"
 
+- name: Compute public IP address configuration
+  ansible.builtin.set_fact:
+    vmss_public_ip_config: >-
+      {{ {'name': 'public', 'properties': {'idleTimeoutInMinutes': 30, 'dnsSettings': {'domainNameLabel': 'neo4j-' + resource_suffix}}} if (public_ip_enabled | bool) else None }}
+
 - name: Create VM Scale Set with Neo4j marketplace image
   azure.azcollection.azure_rm_resource:
     resource_group: "{{ resource_group }}"
@@ -64,12 +69,7 @@
                       properties:
                         subnet:
                           id: "{{ neo4j_subnet_id }}"
-                        publicIPAddressConfiguration:
-                          name: public
-                          properties:
-                            idleTimeoutInMinutes: 30
-                            dnsSettings:
-                              domainNameLabel: "neo4j-{{ resource_suffix }}"
+                        publicIPAddressConfiguration: "{{ vmss_public_ip_config }}"
                         loadBalancerBackendAddressPools: "{{ [{'id': lb_backend_pool_id}] if (load_balancer_condition | bool) else [] }}"
           extensionProfile:
             extensions: []
@@ -84,8 +84,8 @@
   ansible.builtin.debug:
     msg:
       - "Neo4j deployment complete"
-      - "Browser URL: http://vm000000.neo4j-{{ resource_suffix }}.{{ location }}.cloudapp.azure.com:7474"
-      - "SSH: ssh {{ admin_username }}@vm000000.neo4j-{{ resource_suffix }}.{{ location }}.cloudapp.azure.com"
+      - "Browser URL: {{ 'http://vm000000.neo4j-' + resource_suffix + '.' + location + '.cloudapp.azure.com:7474' if (public_ip_enabled | bool) else 'N/A (public IP disabled — use load balancer or bastion)' }}"
+      - "SSH: {{ 'ssh ' + admin_username + '@vm000000.neo4j-' + resource_suffix + '.' + location + '.cloudapp.azure.com' if (public_ip_enabled | bool) else 'N/A (use bastion or jumpbox)' }}"
       - "Load Balancer private IP: {{ lb_private_ip if (load_balancer_condition | bool) else 'N/A (standalone)' }}"
       - "VMSS name: {{ neo4j_vmss_name }}"
       - "Node count: {{ node_count }}"

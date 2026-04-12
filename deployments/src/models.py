@@ -201,6 +201,9 @@ class DeploymentState(BaseModel):
         "pending", description="Deployment status"
     )
     subscription_scoped: bool = Field(False, description="Use subscription-scoped deployment")
+    databricks_resource_group: Optional[str] = Field(
+        None, description="Databricks customer RG for databricks-peering deployments (deleted alongside main RG)"
+    )
 
 
 class ActiveDeployments(BaseModel):
