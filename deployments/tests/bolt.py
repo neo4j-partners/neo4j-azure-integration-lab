@@ -8,6 +8,8 @@ run via VMSS run-command from inside the Neo4j VNet.
 
 from .base import TestResult, _get_vmss, _vmss_run
 
+_CHECK_NAMES = ["LB HTTP 7474", "LB TCP 7687", "Bolt end-to-end (RETURN 1)"]
+
 
 class BoltChecker:
     def __init__(self, neo4j_rg: str, lb_ip: str, username: str, password: str) -> None:
@@ -51,17 +53,9 @@ class BoltChecker:
     def run(self) -> list[TestResult]:
         name, ids = _get_vmss(self.neo4j_rg)
         if not name:
-            return [
-                TestResult("LB HTTP 7474", False, "VMSS not found"),
-                TestResult("LB TCP 7687", False, "VMSS not found"),
-                TestResult("Bolt end-to-end (RETURN 1)", False, "VMSS not found"),
-            ]
+            return [TestResult(n, False, "VMSS not found") for n in _CHECK_NAMES]
         if not ids:
-            return [
-                TestResult("LB HTTP 7474", False, "No VMSS instances found"),
-                TestResult("LB TCP 7687", False, "No VMSS instances found"),
-                TestResult("Bolt end-to-end (RETURN 1)", False, "No VMSS instances found"),
-            ]
+            return [TestResult(n, False, "No VMSS instances found") for n in _CHECK_NAMES]
         return [
             self._check_lb_http(name, ids),
             self._check_lb_tcp(name, ids),

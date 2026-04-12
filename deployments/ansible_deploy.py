@@ -9,7 +9,6 @@ import hashlib
 import json
 import os
 import subprocess
-import sys
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -22,10 +21,17 @@ from rich.panel import Panel
 from rich.table import Table
 from typing_extensions import Annotated
 
-# Add src to path
-sys.path.insert(0, str(Path(__file__).parent / "src"))
-
 from src.config import ConfigManager
+from src.constants import NEO4J_BOLT_PORT, NEO4J_HTTP_PORT, RESOURCE_SUFFIX_LENGTH
+from src.deployment_output import (
+    ConfigurationJSON,
+    ConnectionJSON,
+    DeploymentJSON,
+    NetworkJSON,
+    SSHJSON,
+    display_connection_info,
+    write_deployment_json,
+)
 from src.password import PasswordManager
 from src.setup import SetupWizard
 from src.utils import find_deployment_file, run_command
@@ -203,20 +209,18 @@ def _save_partial_state(
     databricks_managed_resource_group: str,
 ) -> Path:
     """Save state after neo4j.yml succeeds so cleanup can find all RGs if databricks.yml fails."""
-    DEPLOYMENTS_DIR.mkdir(exist_ok=True)
-    state = {
-        "scenario": scenario_name,
-        "engine": "ansible",
-        "state": "partial",
-        "resource_group": neo4j_resource_group,
-        "neo4j_resource_group": neo4j_resource_group,
-        "databricks_resource_group": databricks_resource_group,
-        "databricks_managed_resource_group": databricks_managed_resource_group,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-    }
+    data = DeploymentJSON(
+        scenario=scenario_name,
+        engine="ansible",
+        state="partial",
+        resource_group=neo4j_resource_group,
+        neo4j_resource_group=neo4j_resource_group,
+        databricks_resource_group=databricks_resource_group,
+        databricks_managed_resource_group=databricks_managed_resource_group,
+        created_at=datetime.now(timezone.utc).isoformat(),
+    )
     file_path = DEPLOYMENTS_DIR / f"{scenario_name}-ansible.json"
-    with open(file_path, "w") as f:
-        json.dump(state, f, indent=2)
+    write_deployment_json(data, file_path)
     return file_path
 
 
@@ -236,110 +240,57 @@ def _save_deployment_details(
     databricks_vnet_id: Optional[str] = None,
 ) -> Path:
     """Save deployment details to .deployments/{scenario}-ansible.json."""
-    DEPLOYMENTS_DIR.mkdir(exist_ok=True)
-
     if public_ip:
         neo4j_uri = (
-            f"bolt://{public_ip}:7687" if node_count == 1 else f"neo4j://{public_ip}:7687"
+            f"bolt://{public_ip}:{NEO4J_BOLT_PORT}" if node_count == 1
+            else f"neo4j://{public_ip}:{NEO4J_BOLT_PORT}"
         )
-        browser_url = f"http://{public_ip}:7474"
+        browser_url = f"http://{public_ip}:{NEO4J_HTTP_PORT}"
         ssh_command = f"ssh neo4j@{public_ip}"
     else:
         neo4j_uri = browser_url = ssh_command = "unavailable - query Azure portal for IP"
+        public_ip = None
 
-    connection: dict = {
-        "neo4j_uri": neo4j_uri,
-        "browser_url": browser_url,
-        "username": "neo4j",
-        "password": password,
-        "neo4j_database": "neo4j",
-        "lb_private_ip": lb_private_ip,
-        "databricks_workspace_url": (
-            f"https://{databricks_workspace_url}" if databricks_workspace_url else None
+    data = DeploymentJSON(
+        scenario=scenario_name,
+        engine="ansible",
+        state="complete",
+        resource_group=resource_group,
+        neo4j_resource_group=resource_group,
+        databricks_resource_group=databricks_resource_group,
+        databricks_managed_resource_group=databricks_managed_resource_group,
+        created_at=datetime.now(timezone.utc).isoformat(),
+        connection=ConnectionJSON(
+            neo4j_uri=neo4j_uri,
+            browser_url=browser_url,
+            username="neo4j",
+            password=password,
+            neo4j_database="neo4j",
+            lb_private_ip=lb_private_ip,
+            databricks_bolt_uri=f"bolt://{lb_private_ip}:{NEO4J_BOLT_PORT}" if lb_private_ip else None,
+            databricks_workspace_url=f"https://{databricks_workspace_url}" if databricks_workspace_url else None,
+            databricks_workspace_host=databricks_workspace_url,
         ),
-    }
-    if lb_private_ip:
-        connection["databricks_bolt_uri"] = f"bolt://{lb_private_ip}:7687"
-    if databricks_workspace_url:
-        connection["databricks_workspace_host"] = databricks_workspace_url
-
-    network: dict = {
-        "vnet_id": neo4j_vnet_id or "",
-        "nsg_id": neo4j_nsg_id or "",
-        "lb_private_ip": lb_private_ip or "",
-    }
-    if databricks_vnet_id:
-        network["databricks_vnet_id"] = databricks_vnet_id
-
-    details = {
-        "scenario": scenario_name,
-        "engine": "ansible",
-        "state": "complete",
-        "resource_group": resource_group,
-        "neo4j_resource_group": resource_group,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "connection": connection,
-        "ssh": {
-            "hostname": public_ip,
-            "username": "neo4j",
-            "command": ssh_command,
-        },
-        "configuration": {
-            "license_type": license_type,
-            "node_count": node_count,
-        },
-        "network": network,
-    }
-
-    if databricks_resource_group:
-        details["databricks_resource_group"] = databricks_resource_group
-        details["databricks_managed_resource_group"] = databricks_managed_resource_group
+        ssh=SSHJSON(
+            hostname=public_ip,
+            username="neo4j",
+            command=ssh_command,
+        ),
+        configuration=ConfigurationJSON(
+            license_type=license_type,
+            node_count=node_count,
+        ),
+        network=NetworkJSON(
+            vnet_id=neo4j_vnet_id or "",
+            nsg_id=neo4j_nsg_id or "",
+            lb_private_ip=lb_private_ip or "",
+            databricks_vnet_id=databricks_vnet_id,
+        ),
+    )
 
     file_path = DEPLOYMENTS_DIR / f"{scenario_name}-ansible.json"
-    with open(file_path, "w") as f:
-        json.dump(details, f, indent=2)
-
+    write_deployment_json(data, file_path)
     return file_path
-
-
-def _display_connection_info(details: dict, scenario_name: str) -> None:
-    """Display connection info panel."""
-    conn = details.get("connection", {})
-    ssh = details.get("ssh", {})
-    cfg = details.get("configuration", {})
-    is_partial = details.get("state") == "partial"
-
-    table = Table(show_header=False, box=None, padding=(0, 2))
-    table.add_column("Label", style="cyan")
-    table.add_column("Value", style="white")
-
-    if is_partial:
-        table.add_row("State", "[yellow]partial — Databricks deployment did not complete[/yellow]")
-        table.add_row("Neo4j RG", details.get("neo4j_resource_group", ""))
-        table.add_row("Databricks RG", details.get("databricks_resource_group", ""))
-    else:
-        table.add_row("Browser URL", conn.get("browser_url", ""))
-        table.add_row("Neo4j URI", conn.get("neo4j_uri", ""))
-        table.add_row("Username", conn.get("username", "neo4j"))
-        table.add_row("Password", conn.get("password", ""))
-
-        if conn.get("lb_private_ip"):
-            table.add_row("LB Private IP", conn["lb_private_ip"])
-        if conn.get("databricks_workspace_url"):
-            table.add_row("Databricks URL", conn["databricks_workspace_url"])
-        if ssh.get("command"):
-            table.add_row("SSH Command", ssh["command"])
-
-        table.add_row("License", cfg.get("license_type", ""))
-        if cfg.get("node_count", 1) > 1:
-            table.add_row("Cluster Size", f"{cfg['node_count']} nodes")
-
-    panel = Panel(
-        table,
-        title=f"[bold green]{scenario_name} - Connection Details[/bold green]",
-        border_style="green",
-    )
-    console.print(panel)
 
 
 @app.command()
@@ -538,7 +489,7 @@ def deploy(
         )
         with open(details_file) as f:
             details = json.load(f)
-        _display_connection_info(details, scenario)
+        display_connection_info(details, scenario)
         console.print(f"[dim]Saved to: {details_file}[/dim]\n")
         return
 
@@ -554,7 +505,7 @@ def deploy(
         raise typer.Exit(1)
 
     # resource_suffix is deterministic: same SHA-1 logic used by the playbook
-    resource_suffix = hashlib.sha1(neo4j_rg.encode()).hexdigest()[:13]
+    resource_suffix = hashlib.sha1(neo4j_rg.encode()).hexdigest()[:RESOURCE_SUFFIX_LENGTH]
     neo4j_nsg_name = f"nsg-neo4j-{location}-{resource_suffix}"
 
     # --- Run databricks.yml ---
@@ -613,7 +564,7 @@ def deploy(
     with open(details_file) as f:
         details = json.load(f)
 
-    _display_connection_info(details, scenario)
+    display_connection_info(details, scenario)
     console.print(f"[dim]Saved to: {details_file}[/dim]\n")
 
 
@@ -640,7 +591,7 @@ def status(
             "[yellow]Warning: This deployment was not created by ansible-deploy[/yellow]"
         )
 
-    _display_connection_info(details, scenario)
+    display_connection_info(details, scenario)
     neo4j_rg = details.get("neo4j_resource_group") or details.get("resource_group", "unknown")
     console.print(f"[dim]Neo4j resource group: {neo4j_rg}[/dim]")
     if details.get("databricks_resource_group"):

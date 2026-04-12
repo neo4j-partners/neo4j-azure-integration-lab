@@ -105,6 +105,7 @@ runcmd:
   - echo "dbms.cluster.discovery.resolver_type=LIST" >> /etc/neo4j/neo4j.conf
   - echo "dbms.cluster.endpoints=${DISCOVERY_ENDPOINTS}" >> /etc/neo4j/neo4j.conf
   - echo "dbms.cluster.minimum_initial_system_primaries_count=${NODE_COUNT}" >> /etc/neo4j/neo4j.conf
+  - echo "initial.dbms.default_primaries_count=${NODE_COUNT}" >> /etc/neo4j/neo4j.conf
 
   # Configure extensions and security
   - sed -i 's~#server.unmanaged_extension_classes=org.neo4j.examples.server.unmanaged=/examples/unmanaged~server.unmanaged_extension_classes=com.neo4j.bloom.server=/bloom,semantics.extension=/rdf~g' /etc/neo4j/neo4j.conf

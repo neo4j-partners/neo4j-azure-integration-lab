@@ -13,7 +13,7 @@ from pathlib import Path
 
 from rich.console import Console
 
-from .base import TestReport, TestResult, _print_result
+from .base import DeploymentProfile, TestReport, TestResult, _print_result
 from .bolt import BoltChecker
 from .databricks import DatabricksChecker
 from .databricks_serverless import ServerlessDatabricksChecker
@@ -32,12 +32,12 @@ def run_vnet_tests(deployment: dict) -> TestReport:
 
     Peering checks are skipped when no databricks_resource_group is present.
     """
-    neo4j_rg = deployment.get("neo4j_resource_group") or deployment.get("resource_group", "")
-    dbx_rg = deployment.get("databricks_resource_group", "")
-    conn = deployment.get("connection", {})
-    lb_ip = conn.get("lb_private_ip", "")
-    username = conn.get("username", "neo4j")
-    password = conn.get("password", "")
+    profile = DeploymentProfile.model_validate(deployment)
+    neo4j_rg = profile.effective_neo4j_rg
+    dbx_rg = profile.databricks_resource_group
+    lb_ip = profile.connection.lb_private_ip
+    username = profile.connection.username
+    password = profile.connection.password
 
     report = TestReport(label="VNet connectivity checks")
     console.print("\n[bold cyan]VNet connectivity checks[/bold cyan]")
@@ -78,15 +78,14 @@ def run_databricks_tests(deployment: dict, compute: str = "auto") -> TestReport:
     When "auto", classic runs if workspace_host is present and serverless
     runs if ncc_configured is set in the deployment's serverless block.
     """
-    conn = deployment.get("connection", {})
-    lb_ip = conn.get("lb_private_ip", "")
-    workspace_host = conn.get("databricks_workspace_host", "")
-    username = conn.get("username", "neo4j")
-    password = conn.get("password", "")
-    serverless = deployment.get("serverless", {})
-    domain_name = serverless.get("domain_name", "")
-    serverless_bolt_uri = serverless.get("bolt_uri", "")
-    ncc_configured = serverless.get("ncc_configured", False)
+    profile = DeploymentProfile.model_validate(deployment)
+    lb_ip = profile.connection.lb_private_ip
+    workspace_host = profile.connection.databricks_workspace_host
+    username = profile.connection.username
+    password = profile.connection.password
+    domain_name = profile.serverless.domain_name
+    serverless_bolt_uri = profile.serverless.bolt_uri
+    ncc_configured = profile.serverless.ncc_configured
 
     run_classic = compute in ("classic", "both") or (compute == "auto" and bool(workspace_host))
     run_serverless = compute in ("serverless", "both") or (compute == "auto" and ncc_configured)

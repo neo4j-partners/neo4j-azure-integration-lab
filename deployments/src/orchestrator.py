@@ -80,21 +80,21 @@ class DeploymentOrchestrator:
             with open(params_path) as _f:
                 _p = _json.load(_f)
             _location = _p.get("parameters", {}).get("location", {}).get("value", "eastus")
-            command = (
-                f"az deployment sub validate "
-                f"--location {_location} "
-                f"--template-file {template_path} "
-                f"--parameters {params_path} "
-                f"--debug"
-            )
+            command = [
+                "az", "deployment", "sub", "validate",
+                "--location", _location,
+                "--template-file", str(template_path),
+                "--parameters", str(params_path),
+                "--debug",
+            ]
         else:
-            command = (
-                f"az deployment group validate "
-                f"--resource-group {resource_group} "
-                f"--template-file {template_path} "
-                f"--parameters {params_path} "
-                f"--debug"
-            )
+            command = [
+                "az", "deployment", "group", "validate",
+                "--resource-group", resource_group,
+                "--template-file", str(template_path),
+                "--parameters", str(params_path),
+                "--debug",
+            ]
 
         try:
             result = run_command(command, check=False)
@@ -221,9 +221,6 @@ class DeploymentOrchestrator:
 
             console.print("[green]✓ Template validation passed[/green]")
 
-        # Build Azure CLI command
-        wait_flag = "" if wait else "--no-wait"
-
         # Ensure paths are absolute
         template_path = self.template_file.resolve()
         params_path = parameter_file.resolve()
@@ -242,8 +239,8 @@ class DeploymentOrchestrator:
             # Compile Bicep to JSON
             console.print(f"[dim]Compiling Bicep template...[/dim]")
             compile_result = run_command(
-                f"az bicep build --file {template_path}",
-                check=False
+                ["az", "bicep", "build", "--file", str(template_path)],
+                check=False,
             )
 
             if compile_result.returncode != 0:
@@ -263,27 +260,27 @@ class DeploymentOrchestrator:
             with open(params_path) as _f:
                 _p = _json.load(_f)
             _location = _p.get("parameters", {}).get("location", {}).get("value", "eastus")
-            command = (
-                f"az deployment sub create "
-                f"--location {_location} "
-                f"--name {deployment_state.deployment_name} "
-                f"--template-file {template_path} "
-                f"--parameters {params_path} "
-                f"{wait_flag} "
-                f"--only-show-errors "
-                f"--output json"
-            )
+            command = [
+                "az", "deployment", "sub", "create",
+                "--location", _location,
+                "--name", deployment_state.deployment_name,
+                "--template-file", str(template_path),
+                "--parameters", str(params_path),
+                "--only-show-errors",
+                "--output", "json",
+            ]
         else:
-            command = (
-                f"az deployment group create "
-                f"--resource-group {deployment_state.resource_group_name} "
-                f"--name {deployment_state.deployment_name} "
-                f"--template-file {template_path} "
-                f"--parameters {params_path} "
-                f"{wait_flag} "
-                f"--only-show-errors "
-                f"--output json"
-            )
+            command = [
+                "az", "deployment", "group", "create",
+                "--resource-group", deployment_state.resource_group_name,
+                "--name", deployment_state.deployment_name,
+                "--template-file", str(template_path),
+                "--parameters", str(params_path),
+                "--only-show-errors",
+                "--output", "json",
+            ]
+        if not wait:
+            command.append("--no-wait")
 
         try:
             # Debug: print the command
@@ -330,12 +327,13 @@ class DeploymentOrchestrator:
                 time.sleep(3)
 
                 # Check if deployment exists
-                verify_cmd = (
-                    f"az deployment group show "
-                    f"--resource-group {deployment_state.resource_group_name} "
-                    f"--name {deployment_state.deployment_name} "
-                    f"--query name --output tsv"
-                )
+                verify_cmd = [
+                    "az", "deployment", "group", "show",
+                    "--resource-group", deployment_state.resource_group_name,
+                    "--name", deployment_state.deployment_name,
+                    "--query", "name",
+                    "--output", "tsv",
+                ]
                 verify_result = run_command(verify_cmd, check=False)
 
                 if verify_result.returncode == 0 and verify_result.stdout.strip():
@@ -413,20 +411,20 @@ class DeploymentOrchestrator:
 
             # Query deployment outputs
             if _is_sub:
-                command = (
-                    f"az deployment sub show "
-                    f"--name {deployment_name} "
-                    f"--query properties.outputs "
-                    f"--output json"
-                )
+                command = [
+                    "az", "deployment", "sub", "show",
+                    "--name", deployment_name,
+                    "--query", "properties.outputs",
+                    "--output", "json",
+                ]
             else:
-                command = (
-                    f"az deployment group show "
-                    f"--resource-group {resource_group} "
-                    f"--name {deployment_name} "
-                    f"--query properties.outputs "
-                    f"--output json"
-                )
+                command = [
+                    "az", "deployment", "group", "show",
+                    "--resource-group", resource_group,
+                    "--name", deployment_name,
+                    "--query", "properties.outputs",
+                    "--output", "json",
+                ]
 
             result = run_command(command, check=False)
 

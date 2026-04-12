@@ -5,11 +5,39 @@ Shared types and Azure CLI helpers used by all connectivity test modules.
 import subprocess
 from dataclasses import dataclass, field
 
+from pydantic import BaseModel, Field
 from rich.console import Console
 
 console = Console()
 
 DATABRICKS_RESOURCE_ID = "2ff814a6-3304-4ab8-85cb-cd0e6f879c1d"
+
+
+class _DeploymentConnection(BaseModel):
+    lb_private_ip: str = ""
+    databricks_workspace_host: str = ""
+    username: str = "neo4j"
+    password: str = ""
+
+
+class _ServerlessConfig(BaseModel):
+    domain_name: str = ""
+    bolt_uri: str = ""
+    ncc_configured: bool = False
+
+
+class DeploymentProfile(BaseModel):
+    """Typed view of a saved deployment JSON, as consumed by the test runner."""
+
+    neo4j_resource_group: str = ""
+    resource_group: str = ""
+    databricks_resource_group: str = ""
+    connection: _DeploymentConnection = Field(default_factory=_DeploymentConnection)
+    serverless: _ServerlessConfig = Field(default_factory=_ServerlessConfig)
+
+    @property
+    def effective_neo4j_rg(self) -> str:
+        return self.neo4j_resource_group or self.resource_group
 
 
 @dataclass

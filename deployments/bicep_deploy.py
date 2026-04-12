@@ -7,6 +7,7 @@ Main entry point for the deployment and testing framework.
 
 import json
 import sys
+import uuid
 from pathlib import Path
 from typing import Optional
 
@@ -14,16 +15,158 @@ import typer
 from rich.console import Console
 from typing_extensions import Annotated
 
-# Add src to path
-sys.path.insert(0, str(Path(__file__).parent / "src"))
-
 from src.config import ConfigManager
+from src.constants import NEO4J_BOLT_PORT, DATABRICKS_PLATFORM_APP_ID
+from src.deployment_output import (
+    ConfigurationJSON,
+    ConnectionJSON,
+    DeploymentJSON,
+    NetworkJSON,
+    SSHJSON,
+    display_connection_info,
+    write_deployment_json,
+)
+from src.models import CleanupMode, DeploymentState
 from src.setup import SetupWizard
 from src.utils import find_deployment_file
 
 # Project root directories
 DEPLOYMENTS_DIR = Path(__file__).parent.parent / ".deployments"
 NOTEBOOKS_DIR = Path(__file__).parent.parent / "notebooks"
+
+
+def _build_m2m_auth(settings) -> dict:
+    """Build the m2m_auth section for the deployment JSON."""
+    if not (settings and settings.m2m and settings.m2m.enabled):
+        return {"enabled": False}
+    m2m = settings.m2m
+    if m2m.provider_type == "keycloak":
+        return {
+            "enabled": True,
+            "provider_type": "keycloak",
+            "discovery_uri": m2m.discovery_uri,
+            "token_endpoint": m2m.token_endpoint,
+            "audience": m2m.audience,
+            "client_id": m2m.client_id,
+            "client_secret": m2m.client_secret,
+            "role_mapping": m2m.role_mapping,
+            "display_name": m2m.display_name,
+        }
+    return {
+        "enabled": True,
+        "provider_type": "entra",
+        "tenant_id": m2m.tenant_id,
+        "api_app_id": m2m.api_app_id,
+        "audience": m2m.audience,
+        "client_app_id": m2m.client_app_id,
+        "token_endpoint": f"https://login.microsoftonline.com/{m2m.tenant_id}/oauth2/v2.0/token",
+        "scope": f"{m2m.audience}/.default",
+        "well_known_uri": f"https://login.microsoftonline.com/{m2m.tenant_id}/v2.0/.well-known/openid-configuration",
+    }
+
+
+def _build_databricks_deployment_json(conn_info, outputs: dict, source_scenario: Optional[str]) -> DeploymentJSON:
+    """Build DeploymentJSON for Databricks peering scenarios."""
+    workspace_url = outputs.get("databricksWorkspaceUrl", {}).get("value", "")
+    databricks_vnet_id = outputs.get("databricksVnetId", {}).get("value", "")
+
+    source_conn: dict = {}
+    source_net: dict = {}
+    source_ssh: dict = {}
+    source_cfg: dict = {}
+    neo4j_rg = conn_info.resource_group
+
+    if source_scenario:
+        source_file = find_deployment_file(source_scenario, DEPLOYMENTS_DIR)
+        if source_file and source_file.exists():
+            with open(source_file) as f:
+                source_data = json.load(f)
+            source_conn = source_data.get("connection", {})
+            source_net = source_data.get("network", {})
+            source_ssh = source_data.get("ssh", {})
+            source_cfg = source_data.get("configuration", {})
+            neo4j_rg = source_data.get("resource_group", conn_info.resource_group)
+
+    lb_ip = source_net.get("lb_private_ip") or source_conn.get("lb_private_ip") or ""
+    databricks_rg = f"{neo4j_rg}-dbx"
+
+    return DeploymentJSON(
+        scenario=conn_info.scenario_name,
+        engine="bicep",
+        state="complete",
+        deployment_id=conn_info.deployment_id,
+        resource_group=neo4j_rg,
+        neo4j_resource_group=neo4j_rg,
+        databricks_resource_group=databricks_rg,
+        databricks_managed_resource_group=f"{databricks_rg}-managed",
+        created_at=conn_info.created_at.isoformat(),
+        connection=ConnectionJSON(
+            neo4j_uri=source_conn.get("neo4j_uri", ""),
+            browser_url=source_conn.get("browser_url", ""),
+            username=source_conn.get("username", "neo4j"),
+            password=source_conn.get("password", ""),
+            neo4j_database="neo4j",
+            lb_private_ip=lb_ip or None,
+            databricks_bolt_uri=f"bolt://{lb_ip}:{NEO4J_BOLT_PORT}" if lb_ip else None,
+            databricks_workspace_url=f"https://{workspace_url}" if workspace_url else None,
+            databricks_workspace_host=workspace_url or None,
+        ),
+        ssh=SSHJSON(
+            hostname=source_ssh.get("hostname") or None,
+            username="neo4j",
+            command=source_ssh.get("command") or None,
+        ),
+        configuration=ConfigurationJSON(
+            license_type=source_cfg.get("license_type", "Enterprise"),
+            node_count=source_cfg.get("node_count", 3),
+        ),
+        network=NetworkJSON(
+            vnet_id=source_net.get("vnet_id", ""),
+            nsg_id=source_net.get("nsg_id", ""),
+            lb_private_ip=lb_ip,
+            private_link_service_id=source_net.get("private_link_service_id", ""),
+            databricks_vnet_id=databricks_vnet_id or None,
+        ),
+    )
+
+
+def _build_neo4j_deployment_json(conn_info, outputs: dict, settings) -> DeploymentJSON:
+    """Build DeploymentJSON for Neo4j-only scenarios."""
+    lb_ip = outputs.get("lbPrivateIpAddress", {}).get("value", "")
+    return DeploymentJSON(
+        scenario=conn_info.scenario_name,
+        engine="bicep",
+        state="complete",
+        deployment_id=conn_info.deployment_id,
+        resource_group=conn_info.resource_group,
+        neo4j_resource_group=conn_info.resource_group,
+        created_at=conn_info.created_at.isoformat(),
+        connection=ConnectionJSON(
+            neo4j_uri=conn_info.neo4j_uri,
+            browser_url=conn_info.browser_url,
+            username=conn_info.username,
+            password=conn_info.password,
+            neo4j_database="neo4j",
+            lb_private_ip=lb_ip or None,
+            bloom_url=conn_info.bloom_url,
+        ),
+        ssh=SSHJSON(
+            hostname=conn_info.ssh_hostname,
+            username=conn_info.ssh_username or "neo4j",
+            command=conn_info.ssh_command,
+        ),
+        configuration=ConfigurationJSON(
+            license_type=conn_info.license_type,
+            node_count=conn_info.node_count or 1,
+        ),
+        network=NetworkJSON(
+            vnet_id=outputs.get("vnetId", {}).get("value", ""),
+            nsg_id=outputs.get("nsgId", {}).get("value", ""),
+            lb_private_ip=lb_ip,
+            private_link_service_id=outputs.get("privateLinkServiceId", {}).get("value", ""),
+        ),
+        m2m_auth=_build_m2m_auth(settings),
+    )
 
 
 def save_deployment_details(
@@ -35,217 +178,23 @@ def save_deployment_details(
     """
     Save deployment details to .deployments/{scenario}-bicep.json.
 
-    For Databricks peering scenarios the saved JSON is a complete, merged record
-    combining the Neo4j connection details from the source scenario with the
-    Databricks workspace URL from this deployment — matching the shape produced
-    by the Ansible CLI so that setup-databricks works the same way for both.
+    For Databricks peering scenarios the saved JSON is a complete merged record
+    combining Neo4j connection details from the source scenario with the
+    Databricks workspace URL from this deployment.
 
-    For Neo4j-only scenarios the schema also aligns with the Ansible output:
-    engine, state, neo4j_database, and lb_private_ip are all present in
-    connection so callers never need to know which engine ran the deployment.
+    For Neo4j-only scenarios the schema aligns with the Ansible output so that
+    callers (e.g. setup-databricks) work identically for both engines.
     """
-    DEPLOYMENTS_DIR.mkdir(exist_ok=True)
-
     outputs = conn_info.outputs or {}
 
     if outputs.get("databricksWorkspaceUrl"):
-        # --- Databricks peering scenario ---
-        workspace_url = outputs.get("databricksWorkspaceUrl", {}).get("value", "")
-        databricks_vnet_id = outputs.get("databricksVnetId", {}).get("value", "")
-
-        # Pull Neo4j connection details from the previously-saved source scenario JSON.
-        # The source scenario (e.g. cluster-v2025) has all the bolt URI / LB IP / password
-        # that Databricks needs; this deployment only adds the workspace URL on top.
-        source_conn: dict = {}
-        source_net: dict = {}
-        source_ssh: dict = {}
-        source_cfg: dict = {}
-        neo4j_rg = conn_info.resource_group
-
-        if source_scenario:
-            source_file = find_deployment_file(source_scenario, DEPLOYMENTS_DIR)
-            if source_file and source_file.exists():
-                with open(source_file) as f:
-                    source_data = json.load(f)
-                source_conn = source_data.get("connection", {})
-                source_net = source_data.get("network", {})
-                source_ssh = source_data.get("ssh", {})
-                source_cfg = source_data.get("configuration", {})
-                neo4j_rg = source_data.get("resource_group", conn_info.resource_group)
-
-        lb_ip = source_net.get("lb_private_ip") or source_conn.get("lb_private_ip", "")
-
-        databricks_rg = f"{neo4j_rg}-dbx"
-        details = {
-            "scenario": conn_info.scenario_name,
-            "engine": "bicep",
-            "state": "complete",
-            "deployment_id": conn_info.deployment_id,
-            "resource_group": neo4j_rg,
-            "neo4j_resource_group": neo4j_rg,
-            "databricks_resource_group": databricks_rg,
-            "databricks_managed_resource_group": f"{databricks_rg}-managed",
-            "created_at": conn_info.created_at.isoformat(),
-            "connection": {
-                "neo4j_uri": source_conn.get("neo4j_uri", ""),
-                "browser_url": source_conn.get("browser_url", ""),
-                "username": source_conn.get("username", "neo4j"),
-                "password": source_conn.get("password", ""),
-                "neo4j_database": "neo4j",
-                "lb_private_ip": lb_ip,
-                "databricks_bolt_uri": f"bolt://{lb_ip}:7687" if lb_ip else "",
-                "databricks_workspace_url": f"https://{workspace_url}" if workspace_url else "",
-                "databricks_workspace_host": workspace_url,
-            },
-            "ssh": {
-                "hostname": source_ssh.get("hostname", ""),
-                "username": "neo4j",
-                "command": source_ssh.get("command", ""),
-            },
-            "configuration": {
-                "license_type": source_cfg.get("license_type", "Enterprise"),
-                "node_count": source_cfg.get("node_count", 3),
-            },
-            "network": {
-                "vnet_id": source_net.get("vnet_id", ""),
-                "nsg_id": source_net.get("nsg_id", ""),
-                "lb_private_ip": lb_ip,
-                "private_link_service_id": source_net.get("private_link_service_id", ""),
-                "databricks_vnet_id": databricks_vnet_id,
-            },
-        }
-
+        data = _build_databricks_deployment_json(conn_info, outputs, source_scenario)
     else:
-        # --- Neo4j-only scenario ---
-        lb_ip = outputs.get("lbPrivateIpAddress", {}).get("value", "")
+        data = _build_neo4j_deployment_json(conn_info, outputs, settings)
 
-        details = {
-            "scenario": conn_info.scenario_name,
-            "engine": "bicep",
-            "state": "complete",
-            "deployment_id": conn_info.deployment_id,
-            "resource_group": conn_info.resource_group,
-            "neo4j_resource_group": conn_info.resource_group,
-            "created_at": conn_info.created_at.isoformat(),
-            "connection": {
-                "neo4j_uri": conn_info.neo4j_uri,
-                "browser_url": conn_info.browser_url,
-                "username": conn_info.username,
-                "password": conn_info.password,
-                "neo4j_database": "neo4j",
-                "lb_private_ip": lb_ip,
-            },
-            "ssh": {
-                "hostname": conn_info.ssh_hostname,
-                "username": conn_info.ssh_username,
-                "command": conn_info.ssh_command,
-            },
-            "configuration": {
-                "license_type": conn_info.license_type,
-                "node_count": conn_info.node_count,
-            },
-            "network": {
-                "vnet_id": outputs.get("vnetId", {}).get("value", ""),
-                "nsg_id": outputs.get("nsgId", {}).get("value", ""),
-                "lb_private_ip": lb_ip,
-                "private_link_service_id": outputs.get("privateLinkServiceId", {}).get("value", ""),
-            },
-        }
-
-        if conn_info.bloom_url:
-            details["connection"]["bloom_url"] = conn_info.bloom_url
-
-        # M2M auth block
-        if settings and settings.m2m and settings.m2m.enabled:
-            m2m = settings.m2m
-            if m2m.provider_type == "keycloak":
-                details["m2m_auth"] = {
-                    "enabled": True,
-                    "provider_type": "keycloak",
-                    "discovery_uri": m2m.discovery_uri,
-                    "token_endpoint": m2m.token_endpoint,
-                    "audience": m2m.audience,
-                    "client_id": m2m.client_id,
-                    "client_secret": m2m.client_secret,
-                    "role_mapping": m2m.role_mapping,
-                    "display_name": m2m.display_name,
-                }
-            else:
-                details["m2m_auth"] = {
-                    "enabled": True,
-                    "provider_type": "entra",
-                    "tenant_id": m2m.tenant_id,
-                    "api_app_id": m2m.api_app_id,
-                    "audience": m2m.audience,
-                    "client_app_id": m2m.client_app_id,
-                    "token_endpoint": f"https://login.microsoftonline.com/{m2m.tenant_id}/oauth2/v2.0/token",
-                    "scope": f"{m2m.audience}/.default",
-                    "well_known_uri": f"https://login.microsoftonline.com/{m2m.tenant_id}/v2.0/.well-known/openid-configuration",
-                }
-        else:
-            details["m2m_auth"] = {"enabled": False}
-
-    filename = f"{conn_info.scenario_name}-bicep.json"
-    file_path = DEPLOYMENTS_DIR / filename
-
-    with open(file_path, "w") as f:
-        json.dump(details, f, indent=2)
-
+    file_path = DEPLOYMENTS_DIR / f"{conn_info.scenario_name}-bicep.json"
+    write_deployment_json(data, file_path)
     return file_path
-
-
-def display_connection_info(details: dict, scenario_name: str) -> None:
-    """
-    Display connection information from a saved deployment JSON.
-
-    Handles both Neo4j-only and Databricks peering scenarios using the unified
-    JSON schema produced by save_deployment_details().
-    """
-    from rich.panel import Panel
-    from rich.table import Table
-
-    conn = details.get("connection", {})
-    ssh = details.get("ssh", {})
-    cfg = details.get("configuration", {})
-
-    table = Table(show_header=False, box=None, padding=(0, 2))
-    table.add_column("Label", style="cyan")
-    table.add_column("Value", style="white")
-
-    if conn.get("browser_url"):
-        table.add_row("Browser URL", conn["browser_url"])
-    if conn.get("neo4j_uri"):
-        table.add_row("Neo4j URI", conn["neo4j_uri"])
-    table.add_row("Username", conn.get("username", "neo4j"))
-    table.add_row("Password", conn.get("password", ""))
-
-    if conn.get("bloom_url"):
-        table.add_row("Bloom URL", conn["bloom_url"])
-    if conn.get("lb_private_ip"):
-        table.add_row("LB Private IP", conn["lb_private_ip"])
-    if conn.get("databricks_bolt_uri"):
-        table.add_row("Databricks Bolt URI", conn["databricks_bolt_uri"])
-    if details.get("serverless", {}).get("bolt_uri"):
-        table.add_row("Serverless Bolt URI", details["serverless"]["bolt_uri"])
-    if conn.get("databricks_workspace_url"):
-        table.add_row("Databricks URL", conn["databricks_workspace_url"])
-    if ssh.get("command"):
-        table.add_row("SSH Command", ssh["command"])
-
-    if cfg.get("license_type"):
-        table.add_row("License", cfg["license_type"])
-    if cfg.get("node_count") and cfg["node_count"] > 1:
-        table.add_row("Cluster Size", f"{cfg['node_count']} nodes")
-
-    panel = Panel(
-        table,
-        title=f"[bold green]{scenario_name} - Connection Details[/bold green]",
-        border_style="green",
-    )
-    console.print(panel)
-
-    details_file = DEPLOYMENTS_DIR / f"{scenario_name}-bicep.json"
-    console.print(f"[dim]Saved to: {details_file}[/dim]\n")
 
 
 # Create Typer app
@@ -447,6 +396,159 @@ def validate(
         raise typer.Exit(1)
 
 
+def _generate_param_files(
+    scenarios_to_deploy: list,
+    engine,
+    planner,
+    region: Optional[str],
+    debug: bool,
+) -> list:
+    """Generate parameter files for all scenarios. Prints plan; raises typer.Exit on error."""
+    console.print(f"\n[bold]Generating Parameter Files[/bold]\n")
+    param_files = []
+    for s in scenarios_to_deploy:
+        try:
+            param_file = engine.generate_parameter_file(scenario=s, region=region, debug_mode=debug)
+            param_files.append((s, param_file))
+            timestamp_str = "-".join(param_file.stem.split("-")[-2:])
+            rg_name = planner.generate_resource_group_name(s.name, timestamp_str)
+            deploy_name = planner.generate_deployment_name(s.name, timestamp_str)
+            console.print(f"  [green]✓[/green] {s.name}")
+            console.print(f"    [dim]Resource group: {rg_name}[/dim]")
+            console.print(f"    [dim]Deployment: {deploy_name}[/dim]")
+            console.print(f"    [dim]Parameters: {param_file}[/dim]\n")
+        except Exception as e:
+            console.print(f"  [red]✗[/red] {s.name}: {e}")
+            raise typer.Exit(1)
+    console.print(f"\n[green]✓ Generated {len(param_files)} parameter file(s)[/green]")
+    return param_files
+
+
+def _submit_all_deployments(
+    param_files: list,
+    engine,
+    planner,
+    rg_manager,
+    orchestrator,
+    cleanup,
+    git_branch: str,
+    settings,
+    region: Optional[str],
+) -> list:
+    """Create resource groups and submit all deployments. Returns submitted DeploymentState list."""
+    console.print(f"\n[bold]Creating Resource Groups and Submitting Deployments[/bold]\n")
+    deployment_states = []
+
+    for s, param_file in param_files:
+        timestamp_str = "-".join(param_file.stem.split("-")[-2:])
+        rg_name = planner.generate_resource_group_name(s.name, timestamp_str)
+        deploy_name = planner.generate_deployment_name(s.name, timestamp_str)
+        deployment_id = str(uuid.uuid4())
+
+        target_region = region or settings.default_region
+        tags = rg_manager.generate_tags(
+            scenario_name=s.name,
+            deployment_id=deployment_id,
+            branch=git_branch,
+            owner_email=settings.owner_email,
+            cleanup_mode=cleanup,
+            expires_hours=24,
+        )
+
+        console.print(f"[cyan]Creating resource group for {s.name}...[/cyan]")
+        if not rg_manager.create_resource_group(rg_name, target_region, tags):
+            console.print(f"[red]Failed to create resource group for {s.name}[/red]")
+            continue
+
+        is_sub_scoped = s.deployment_type.value == "databricks-peering"
+        databricks_rg = None
+        if is_sub_scoped:
+            with open(param_file) as _f:
+                _params = json.load(_f)
+            databricks_rg = _params.get("parameters", {}).get("databricksResourceGroup", {}).get("value")
+
+        state = DeploymentState(
+            deployment_id=deployment_id,
+            resource_group_name=rg_name,
+            deployment_name=deploy_name,
+            scenario_name=s.name,
+            git_branch=git_branch,
+            parameter_file_path=str(param_file),
+            cleanup_mode=cleanup,
+            status="pending",
+            subscription_scoped=is_sub_scoped,
+            databricks_resource_group=databricks_rg,
+        )
+        rg_manager.save_deployment_state(state)
+
+        if orchestrator.submit_deployment(state, param_file, wait=False):
+            deployment_states.append(state)
+        else:
+            console.print(f"[red]Failed to submit deployment for {s.name}[/red]")
+
+    return deployment_states
+
+
+def _process_deployment_outputs(
+    deployment_states: list,
+    final_statuses: dict,
+    param_files: list,
+    engine,
+    orchestrator,
+    settings,
+    cleanup_manager,
+) -> tuple[int, int]:
+    """Extract outputs, save connection details, display results. Returns (succeeded, failed)."""
+    console.print(f"\n[bold]Processing Deployment Outputs[/bold]\n")
+    succeeded_count = 0
+    failed_count = 0
+
+    for state in deployment_states:
+        final_status = final_statuses.get(state.deployment_id)
+
+        if final_status != "Succeeded":
+            failed_count += 1
+            cleanup_manager.auto_cleanup_deployment(state, no_wait=True)
+            continue
+
+        succeeded_count += 1
+        outputs = orchestrator.extract_outputs(
+            state.resource_group_name,
+            state.deployment_name,
+            is_subscription_scoped=state.subscription_scoped,
+        )
+
+        if not outputs:
+            console.print(f"[yellow]Warning: No outputs for {state.scenario_name}[/yellow]")
+            continue
+
+        scenario_obj = next((s for s, _ in param_files if s.name == state.scenario_name), None)
+        if not scenario_obj:
+            console.print(f"[red]Error: Scenario config not found for {state.scenario_name}[/red]")
+            continue
+
+        password = engine.password_manager.get_password(state.scenario_name)
+        conn_info = orchestrator.parse_connection_info(outputs, state, scenario_obj, password)
+
+        if not conn_info:
+            console.print(f"[yellow]Warning: Could not parse connection info for {state.scenario_name}[/yellow]")
+            continue
+
+        orchestrator.save_connection_info(conn_info, state.scenario_name)
+
+        src_scenario = scenario_obj.source_scenario
+        details_file = save_deployment_details(conn_info, state, settings, source_scenario=src_scenario)
+
+        with open(details_file) as _f:
+            saved_details = json.load(_f)
+        display_connection_info(saved_details, state.scenario_name)
+        console.print(f"[dim]Saved to: {details_file}[/dim]\n")
+
+        cleanup_manager.auto_cleanup_deployment(state, no_wait=True)
+
+    return succeeded_count, failed_count
+
+
 @app.command()
 def deploy(
     scenario: Annotated[
@@ -487,12 +589,14 @@ def deploy(
     """
     from rich.table import Table
 
+    from src.cleanup import CleanupManager
     from src.deployment import DeploymentEngine
-    from src.orchestrator import DeploymentPlanner
+    from src.monitor import DeploymentMonitor
+    from src.orchestrator import DeploymentOrchestrator, DeploymentPlanner
+    from src.resource_groups import ResourceGroupManager
+    from src.utils import get_git_branch
 
     config_manager = check_initialized()
-
-    # Load configuration first to show available scenarios in error messages
     settings = config_manager.load_settings()
     scenarios = config_manager.load_scenarios()
 
@@ -514,9 +618,7 @@ def deploy(
         console.print("[red]Error: Cannot specify both --scenario and --all[/red]")
         raise typer.Exit(1)
 
-    # Filter scenarios
     if scenario:
-        # Find specific scenario
         selected = [s for s in scenarios.scenarios if s.name == scenario]
         if not selected:
             console.print(f"[red]Error: Scenario '{scenario}' not found[/red]")
@@ -528,7 +630,6 @@ def deploy(
     else:
         scenarios_to_deploy = scenarios.scenarios
 
-    # Initialize deployment engine
     try:
         engine = DeploymentEngine(settings)
         planner = DeploymentPlanner(settings.resource_group_prefix)
@@ -538,7 +639,6 @@ def deploy(
 
     # Display deployment plan
     console.print(f"\n[bold]Deployment Plan[/bold]\n")
-
     table = Table(title="Scenarios to Deploy")
     table.add_column("Scenario", style="cyan")
     table.add_column("Type", style="white")
@@ -546,88 +646,29 @@ def deploy(
     table.add_column("Version", style="white")
     table.add_column("Size", style="white")
     table.add_column("Region", style="green")
-
     for s in scenarios_to_deploy:
-        target_region = region or settings.default_region
-        size_display = s.vm_size or "Standard_E4s_v5"
-
         table.add_row(
             s.name,
             s.deployment_type.value,
             str(s.node_count),
             s.graph_database_version,
-            size_display,
-            target_region,
+            s.vm_size or "Standard_E4s_v5",
+            region or settings.default_region,
         )
-
     console.print(table)
     console.print(f"\n[cyan]Total scenarios:[/cyan] {len(scenarios_to_deploy)}")
     console.print(f"[cyan]Dry run:[/cyan] {dry_run}")
     if debug:
         console.print(f"[yellow]Debug mode:[/yellow] ENABLED - Verbose Neo4j logging will be configured")
 
-    # Generate parameter files
-    console.print(f"\n[bold]Generating Parameter Files[/bold]\n")
-
-    param_files = []
-    for s in scenarios_to_deploy:
-        try:
-            param_file = engine.generate_parameter_file(
-                scenario=s,
-                region=region,
-                debug_mode=debug,
-            )
-            param_files.append((s, param_file))
-
-            # Generate resource group and deployment names
-            timestamp = param_file.stem.split("-")[-2:]  # Extract timestamp
-            timestamp_str = "-".join(timestamp)
-            rg_name = planner.generate_resource_group_name(s.name, timestamp_str)
-            deploy_name = planner.generate_deployment_name(s.name, timestamp_str)
-
-            console.print(f"  [green]✓[/green] {s.name}")
-            console.print(f"    [dim]Resource group: {rg_name}[/dim]")
-            console.print(f"    [dim]Deployment: {deploy_name}[/dim]")
-            console.print(f"    [dim]Parameters: {param_file}[/dim]\n")
-
-        except Exception as e:
-            console.print(f"  [red]✗[/red] {s.name}: {e}")
-            raise typer.Exit(1)
-
-    console.print(f"\n[green]✓ Generated {len(param_files)} parameter file(s)[/green]")
+    param_files = _generate_param_files(scenarios_to_deploy, engine, planner, region, debug)
 
     if dry_run:
         console.print("\n[yellow]Dry run complete. No resources deployed.[/yellow]")
         console.print("[dim]Remove --dry-run to execute deployment[/dim]")
         return
 
-    # Execute actual deployments
-    import uuid
-    from datetime import datetime, timedelta, timezone
-
-    from src.cleanup import CleanupManager
-    from src.models import CleanupMode, DeploymentState
-    from src.monitor import DeploymentMonitor
-    from src.orchestrator import DeploymentOrchestrator
-    from src.password import PasswordManager
-    from src.resource_groups import ResourceGroupManager
-    from src.utils import get_git_branch
-
-    # Initialize components
-    rg_manager = ResourceGroupManager()
-    password_manager = PasswordManager(settings)
-    orchestrator = DeploymentOrchestrator(
-        template_file=engine.template_file,
-        resource_group_manager=rg_manager,
-    )
-    monitor = DeploymentMonitor(
-        resource_group_manager=rg_manager,
-        poll_interval=30,
-        timeout_seconds=settings.deployment_timeout,
-    )
-    cleanup_manager = CleanupManager(rg_manager)
-
-    # Determine cleanup mode
+    # Resolve cleanup mode
     if cleanup_mode:
         try:
             cleanup = CleanupMode(cleanup_mode)
@@ -638,69 +679,22 @@ def deploy(
     else:
         cleanup = settings.default_cleanup_mode
 
-    # Get current git branch for tagging
+    rg_manager = ResourceGroupManager()
+    orchestrator = DeploymentOrchestrator(
+        template_file=engine.template_file,
+        resource_group_manager=rg_manager,
+    )
+    monitor = DeploymentMonitor(
+        resource_group_manager=rg_manager,
+        poll_interval=30,
+        timeout_seconds=settings.deployment_timeout,
+    )
+    cleanup_manager = CleanupManager(rg_manager)
     git_branch = get_git_branch() or "unknown"
 
-    # Create deployments
-    console.print(f"\n[bold]Creating Resource Groups and Submitting Deployments[/bold]\n")
-
-    deployment_states = []
-
-    for s, param_file in param_files:
-        # Extract timestamp from parameter file name
-        timestamp_parts = param_file.stem.split("-")[-2:]
-        timestamp_str = "-".join(timestamp_parts)
-
-        # Generate names
-        rg_name = planner.generate_resource_group_name(s.name, timestamp_str)
-        deploy_name = planner.generate_deployment_name(s.name, timestamp_str)
-        deployment_id = str(uuid.uuid4())
-
-        # Create resource group
-        target_region = region or settings.default_region
-        tags = rg_manager.generate_tags(
-            scenario_name=s.name,
-            deployment_id=deployment_id,
-            branch=git_branch,
-            owner_email=settings.owner_email,
-            cleanup_mode=cleanup,
-            expires_hours=24,
-        )
-
-        console.print(f"[cyan]Creating resource group for {s.name}...[/cyan]")
-        if not rg_manager.create_resource_group(rg_name, target_region, tags):
-            console.print(f"[red]Failed to create resource group for {s.name}[/red]")
-            continue
-
-        # Create deployment state
-        is_sub_scoped = s.deployment_type.value == "databricks-peering"
-        databricks_rg = None
-        if is_sub_scoped:
-            import json as _json
-            with open(param_file) as _f:
-                _params = _json.load(_f)
-            databricks_rg = _params.get("parameters", {}).get("databricksResourceGroup", {}).get("value")
-        state = DeploymentState(
-            deployment_id=deployment_id,
-            resource_group_name=rg_name,
-            deployment_name=deploy_name,
-            scenario_name=s.name,
-            git_branch=git_branch,
-            parameter_file_path=str(param_file),
-            cleanup_mode=cleanup,
-            status="pending",
-            subscription_scoped=is_sub_scoped,
-            databricks_resource_group=databricks_rg,
-        )
-
-        # Save initial state
-        rg_manager.save_deployment_state(state)
-
-        # Submit deployment
-        if orchestrator.submit_deployment(state, param_file, wait=False):
-            deployment_states.append(state)
-        else:
-            console.print(f"[red]Failed to submit deployment for {s.name}[/red]")
+    deployment_states = _submit_all_deployments(
+        param_files, engine, planner, rg_manager, orchestrator, cleanup, git_branch, settings, region
+    )
 
     if not deployment_states:
         console.print("\n[red]No deployments were submitted successfully[/red]")
@@ -708,73 +702,12 @@ def deploy(
 
     console.print(f"\n[green]✓ Submitted {len(deployment_states)} deployment(s)[/green]")
 
-    # Monitor deployments
     console.print(f"\n[bold]Monitoring Deployments[/bold]\n")
-    final_statuses = monitor.monitor_deployments(
-        deployment_states,
-        show_live_dashboard=True,
+    final_statuses = monitor.monitor_deployments(deployment_states, show_live_dashboard=True)
+
+    succeeded_count, failed_count = _process_deployment_outputs(
+        deployment_states, final_statuses, param_files, engine, orchestrator, settings, cleanup_manager
     )
-
-    # Process completed deployments
-    console.print(f"\n[bold]Processing Deployment Outputs[/bold]\n")
-
-    succeeded_count = 0
-    failed_count = 0
-
-    for state in deployment_states:
-        final_status = final_statuses.get(state.deployment_id)
-
-        if final_status == "Succeeded":
-            succeeded_count += 1
-
-            # Extract outputs
-            outputs = orchestrator.extract_outputs(
-                state.resource_group_name,
-                state.deployment_name,
-            )
-
-            if outputs:
-                # Find scenario for this deployment
-                scenario_obj = next((s for s, _ in param_files if s.name == state.scenario_name), None)
-                if scenario_obj:
-                    # Get password for this scenario
-                    password = engine.password_manager.get_password(state.scenario_name)
-
-                    # Parse connection info with credentials
-                    conn_info = orchestrator.parse_connection_info(
-                        outputs,
-                        state,
-                        scenario_obj,
-                        password,
-                    )
-
-                    if conn_info:
-                        # Save connection info (includes credentials)
-                        orchestrator.save_connection_info(
-                            conn_info,
-                            state.scenario_name,
-                        )
-
-                        # Also save to project root .deployments/ for easy access.
-                        # Pass source_scenario so Databricks deployments get a fully
-                        # merged JSON with the Neo4j connection details from the
-                        # cluster deployment they peer with.
-                        src_scenario = scenario_obj.source_scenario if scenario_obj else None
-                        details_file = save_deployment_details(conn_info, state, settings, source_scenario=src_scenario)
-
-                        # Display from the saved JSON so Databricks and Neo4j-only
-                        # scenarios both render consistently.
-                        with open(details_file) as _f:
-                            saved_details = json.load(_f)
-                        display_connection_info(saved_details, state.scenario_name)
-
-                        # Auto-cleanup after successful deployment (if configured)
-                        cleanup_manager.auto_cleanup_deployment(state, no_wait=True)
-        else:
-            failed_count += 1
-
-            # Auto-cleanup for failed deployments (will respect cleanup mode)
-            cleanup_manager.auto_cleanup_deployment(state, no_wait=True)
 
     # Summary
     console.print("\n" + "=" * 60)
@@ -785,18 +718,12 @@ def deploy(
 
     if succeeded_count > 0:
         console.print("\n[cyan]Next steps:[/cyan]")
-
-        # Show validation command for each successful deployment
         for state in deployment_states:
-            final_status = final_statuses.get(state.deployment_id)
-            if final_status == "Succeeded":
+            if final_statuses.get(state.deployment_id) == "Succeeded":
                 console.print(f"  - Validate {state.scenario_name}: [bold]uv run validate_deploy {state.scenario_name}[/bold]")
-
         console.print("  - Check status: [bold]uv run bicep-deploy status[/bold]")
-
         if cleanup == CleanupMode.MANUAL:
             console.print("\n[cyan]Clean up resources:[/cyan]")
-            # Show example with first deployment ID
             if deployment_states:
                 example_id = deployment_states[0].deployment_id[:8]
                 console.print(f"  - Individual: [bold]uv run bicep-deploy cleanup --deployment {example_id} --force[/bold]")
@@ -1393,13 +1320,13 @@ def setup_ncc_cmd(
         raise typer.Exit(1)
 
     # --- Get AAD token for Databricks Account API ---
-    # 2ff814a6-3304-4ab8-85cb-cd0e6f879c1d is the fixed, globally-registered Azure AD
+    # DATABRICKS_PLATFORM_APP_ID is the fixed, globally-registered Azure AD
     # application ID for the Databricks platform service — identical in every tenant.
     try:
         token_result = _sp.run(
             [
                 "az", "account", "get-access-token",
-                "--resource", "2ff814a6-3304-4ab8-85cb-cd0e6f879c1d",
+                "--resource", DATABRICKS_PLATFORM_APP_ID,
                 "--query", "accessToken",
                 "--output", "tsv",
             ],
@@ -1447,7 +1374,7 @@ def setup_ncc_cmd(
         _data["serverless"] = {
             "ncc_configured": True,
             "domain_name": domain_name,
-            "bolt_uri": f"bolt://{domain_name}:7687",
+            "bolt_uri": f"bolt://{domain_name}:{NEO4J_BOLT_PORT}",
             "pls_name": pls_name,
         }
         with open(details_file, "w") as _f:
@@ -1455,7 +1382,7 @@ def setup_ncc_cmd(
     except Exception as _e:
         console.print(f"[yellow]Warning: could not update deployment JSON: {_e}[/yellow]")
 
-    bolt_uri = f"bolt://{domain_name}:7687"
+    bolt_uri = f"bolt://{domain_name}:{NEO4J_BOLT_PORT}"
     table = Table(show_header=False, box=None, padding=(0, 2))
     table.add_column("Label", style="cyan")
     table.add_column("Value", style="white")

@@ -67,3 +67,14 @@ PASSWORD_OPTIONS: Final[list[str]] = [
     "environment",
     "prompt",
 ]
+
+# Neo4j network ports
+NEO4J_BOLT_PORT: Final[int] = 7687
+NEO4J_HTTP_PORT: Final[int] = 7474
+NEO4J_HTTPS_PORT: Final[int] = 7473
+
+# Length of deterministic SHA-1 resource suffix used in Ansible deployments
+RESOURCE_SUFFIX_LENGTH: Final[int] = 13
+
+# Azure AD application ID for the Databricks platform service (fixed across all tenants)
+DATABRICKS_PLATFORM_APP_ID: Final[str] = "2ff814a6-3304-4ab8-85cb-cd0e6f879c1d"
