@@ -26,7 +26,7 @@ resource networkSG 'Microsoft.Network/networkSecurityGroups@2025-03-01' = {
         properties: {
           protocol: 'Tcp'
           destinationPortRange: '7473'
-          sourceAddressPrefix: 'Internet'
+          sourceAddressPrefix: databricksCidr
           destinationAddressPrefix: '*'
           access: 'Allow'
           priority: 101

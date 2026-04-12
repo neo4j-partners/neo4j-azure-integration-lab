@@ -21,7 +21,7 @@ driver = None
 try:
     from neo4j import GraphDatabase
     driver = GraphDatabase.driver(bolt_uri, auth=(username, password))
-    with driver.session() as session:
+    with driver.session(database="neo4j") as session:
         session.run("RETURN 1").consume()
     print("PASS:BOLT")
 except Exception as e:

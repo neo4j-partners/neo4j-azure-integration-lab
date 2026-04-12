@@ -147,7 +147,7 @@ resource vnet 'Microsoft.Network/virtualNetworks@2025-03-01' = {
       {
         name: 'pls-subnet'
         properties: {
-          addressPrefix: '10.0.2.0/28'
+          addressPrefix: '10.1.0.0/28'
           privateLinkServiceNetworkPolicies: 'Disabled'
         }
       }

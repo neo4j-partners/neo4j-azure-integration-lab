@@ -279,7 +279,6 @@ When `enableHttp` is `false`, `server.http.enabled=false` is written to `neo4j.c
 **Not safe for cluster deployments yet.** The load balancer health probe (`httpprobe`) does an HTTP GET on port 7474. When `enableHttp` is `false`, that request gets no response, the probe fails for every backend, and the LB marks all instances unhealthy — Bolt connections on 7687 receive TCP RST even though Neo4j is running. Two items need to be addressed before `enableHttp=false` is usable in a cluster deployment:
 
 1. **LB probe compatibility**: Add an HTTPS probe on port 7473 (or a dedicated health endpoint) and update the `inbound7687` and `inbound7688` rules to reference it when HTTP is disabled. The current `httpprobe` only works when the HTTP connector is on.
-2. **`sshSourceCidr` pass-through**: The `databricks-main.bicep` template accepts `sshSourceCidr` but `_generate_databricks_parameters` in `deployments/src/deployment.py` does not pass it. The Bicep default (`Internet`) covers current usage, but the parameter is silently ignored if you restrict SSH on the cluster side. Add `ssh_source_cidr` to `TestScenario` and pass it through.
 
 `enableHttp=false` is safe for **standalone** deployments where no load balancer is involved.
 
