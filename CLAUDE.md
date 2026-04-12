@@ -23,6 +23,17 @@ uv run bicep-deploy test                         # Test most recent deployment
 uv run bicep-deploy cleanup --all --force        # Delete all resources
 ```
 
+### Connectivity Tests (from `deployments/` directory)
+
+```bash
+uv run neo4j-connect check --scenario cluster-v2025 --checks vnet              # VNet-internal checks only
+uv run neo4j-connect check --scenario peer-databricks-v2025 --checks vnet      # Peering + NSG checks
+uv run neo4j-connect check --scenario peer-databricks-v2025 --compute classic  # Databricks classic compute
+uv run neo4j-connect check --scenario peer-databricks-v2025 --compute serverless # Serverless via NCC/PLS
+uv run neo4j-connect check --scenario peer-databricks-v2025 --compute both     # Classic + serverless
+uv run neo4j-connect status                                                     # List all deployment profiles
+```
+
 ### Bicep Validation
 
 ```bash
