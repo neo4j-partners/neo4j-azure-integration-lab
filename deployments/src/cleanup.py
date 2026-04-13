@@ -520,6 +520,14 @@ class CleanupManager:
         Returns:
             CleanupResult if cleanup was performed, None if skipped
         """
+        console.print(
+            f"[dim]auto_cleanup_deployment called: "
+            f"deployment_id={deployment.deployment_id} "
+            f"scenario={deployment.scenario_name} "
+            f"rg={deployment.resource_group_name} "
+            f"dbx_rg={deployment.databricks_resource_group} "
+            f"cleanup_mode={deployment.cleanup_mode}[/dim]"
+        )
         decision = self.should_cleanup_deployment(deployment)
 
         if not decision.should_cleanup:

@@ -34,6 +34,7 @@ from src.deployment_output import (
 )
 from src.password import PasswordManager
 from src.setup import SetupWizard
+from src.models import Engine
 from src.utils import find_deployment_file, run_command
 
 DEPLOYMENTS_DIR = Path(__file__).parent.parent / ".deployments"
@@ -107,6 +108,20 @@ def _get_neo4j_nsg_id(resource_group: str) -> Optional[str]:
     """Query Azure for the Neo4j NSG resource ID."""
     result = run_command(
         ["az", "network", "nsg", "list", "-g", resource_group, "--query", "[0].id", "-o", "tsv"],
+        check=False,
+    )
+    if result.returncode != 0 or not result.stdout.strip():
+        return None
+    return result.stdout.strip()
+
+
+def _get_neo4j_pls_resource_id(resource_group: str) -> Optional[str]:
+    """Query Azure for the Private Link Service resource ID in the resource group."""
+    result = run_command(
+        [
+            "az", "network", "private-link-service", "list",
+            "-g", resource_group, "--query", "[0].id", "-o", "tsv",
+        ],
         check=False,
     )
     if result.returncode != 0 or not result.stdout.strip():
@@ -234,6 +249,7 @@ def _save_deployment_details(
     lb_private_ip: Optional[str] = None,
     neo4j_vnet_id: Optional[str] = None,
     neo4j_nsg_id: Optional[str] = None,
+    pls_resource_id: Optional[str] = None,
     databricks_resource_group: Optional[str] = None,
     databricks_managed_resource_group: Optional[str] = None,
     databricks_workspace_url: Optional[str] = None,
@@ -284,6 +300,7 @@ def _save_deployment_details(
             vnet_id=neo4j_vnet_id or "",
             nsg_id=neo4j_nsg_id or "",
             lb_private_ip=lb_private_ip or "",
+            private_link_service_id=pls_resource_id or "",
             databricks_vnet_id=databricks_vnet_id,
         ),
     )
@@ -476,6 +493,7 @@ def deploy(
         neo4j_vnet_id = _get_neo4j_vnet_id(neo4j_rg)
         neo4j_nsg_id = _get_neo4j_nsg_id(neo4j_rg)
         lb_private_ip = _get_lb_private_ip(neo4j_rg) if node_count >= 3 else None
+        pls_resource_id = _get_neo4j_pls_resource_id(neo4j_rg) if node_count >= 3 else None
         details_file = _save_deployment_details(
             scenario_name=scenario,
             resource_group=neo4j_rg,
@@ -486,6 +504,7 @@ def deploy(
             lb_private_ip=lb_private_ip,
             neo4j_vnet_id=neo4j_vnet_id,
             neo4j_nsg_id=neo4j_nsg_id,
+            pls_resource_id=pls_resource_id,
         )
         with open(details_file) as f:
             details = json.load(f)
@@ -543,6 +562,7 @@ def deploy(
     lb_private_ip = _get_lb_private_ip(neo4j_rg)
     workspace_url = _get_databricks_workspace_url(dbx_rg)
     neo4j_nsg_id = _get_neo4j_nsg_id(neo4j_rg)
+    pls_resource_id = _get_neo4j_pls_resource_id(neo4j_rg)
     databricks_vnet_id = _get_databricks_vnet_id(dbx_rg)
 
     details_file = _save_deployment_details(
@@ -555,6 +575,7 @@ def deploy(
         lb_private_ip=lb_private_ip,
         neo4j_vnet_id=neo4j_vnet_id,
         neo4j_nsg_id=neo4j_nsg_id,
+        pls_resource_id=pls_resource_id,
         databricks_resource_group=dbx_rg,
         databricks_managed_resource_group=dbx_managed_rg,
         databricks_workspace_url=workspace_url,
@@ -576,20 +597,15 @@ def status(
     ],
 ) -> None:
     """Show connection details for a previously deployed scenario."""
-    details_file = find_deployment_file(scenario, DEPLOYMENTS_DIR)
+    details_file = find_deployment_file(scenario, DEPLOYMENTS_DIR, Engine.ansible)
 
     if not details_file:
-        console.print(f"[red]No deployment found for scenario: {scenario}[/red]")
+        console.print(f"[red]No ansible deployment found for scenario: {scenario}[/red]")
         console.print(f"[dim]Run: ansible-deploy deploy --scenario {scenario}[/dim]")
         raise typer.Exit(1)
 
     with open(details_file) as f:
         details = json.load(f)
-
-    if details.get("engine") != "ansible":
-        console.print(
-            "[yellow]Warning: This deployment was not created by ansible-deploy[/yellow]"
-        )
 
     display_connection_info(details, scenario)
     neo4j_rg = details.get("neo4j_resource_group") or details.get("resource_group", "unknown")
@@ -625,9 +641,9 @@ def cleanup(
     databricks_managed_resource_group = None
 
     if scenario:
-        details_file = find_deployment_file(scenario, DEPLOYMENTS_DIR)
+        details_file = find_deployment_file(scenario, DEPLOYMENTS_DIR, Engine.ansible)
         if not details_file:
-            console.print(f"[red]No deployment found for scenario: {scenario}[/red]")
+            console.print(f"[red]No ansible deployment found for scenario: {scenario}[/red]")
             raise typer.Exit(1)
         with open(details_file) as f:
             details = json.load(f)
@@ -715,13 +731,14 @@ def setup_databricks(
     - Uploads 5 secrets: bolt_uri, host, username, password, database
     - Uploads the connectivity test notebook to the Databricks workspace
 
-    Auth options (one required):
+    Auth options (in order of precedence):
       --token <pat>     Personal access token — generate in Databricks UI under User Settings > Developer > Access tokens
       --profile <name>  Named profile from ~/.databrickscfg
+      (none)            Falls back to AAD token from active az login session
     """
-    details_file = find_deployment_file(scenario, DEPLOYMENTS_DIR)
+    details_file = find_deployment_file(scenario, DEPLOYMENTS_DIR, Engine.ansible)
     if not details_file:
-        console.print(f"[red]No deployment found for scenario: {scenario}[/red]")
+        console.print(f"[red]No ansible deployment found for scenario: {scenario}[/red]")
         console.print(f"[dim]Run: ansible-deploy deploy --scenario {scenario}[/dim]")
         raise typer.Exit(1)
 
@@ -748,13 +765,6 @@ def setup_databricks(
         console.print("[red]No databricks_workspace_host in deployment JSON.[/red]")
         raise typer.Exit(1)
 
-    if not token and not profile:
-        console.print(
-            "[red]Provide --token or --profile for Databricks authentication.[/red]\n"
-            "[dim]Generate a PAT: Databricks workspace → User Settings → Developer → Access tokens[/dim]"
-        )
-        raise typer.Exit(1)
-
     try:
         from databricks.sdk import WorkspaceClient
     except ImportError:
@@ -764,12 +774,29 @@ def setup_databricks(
     console.print(f"\n[bold]Connecting to:[/bold] https://{workspace_host}")
     if token:
         client = WorkspaceClient(host=workspace_host, token=token)
-    else:
+    elif profile:
         client = WorkspaceClient(profile=profile)
+    else:
+        # Fall back to AAD token from active az login session — same as DatabricksCheckerBase
+        import subprocess as _sp
+        _result = _sp.run(
+            ["az", "account", "get-access-token",
+             "--resource", "2ff814a6-3304-4ab8-85cb-cd0e6f879c1d",
+             "--query", "accessToken", "-o", "tsv"],
+            capture_output=True, text=True, check=False,
+        )
+        aad_token = _result.stdout.strip()
+        if not aad_token:
+            console.print(
+                "[red]No --token or --profile provided and AAD token acquisition failed.[/red]\n"
+                "[dim]Run 'az login' or pass --token / --profile explicitly.[/dim]"
+            )
+            raise typer.Exit(1)
+        client = WorkspaceClient(host=workspace_host, token=aad_token)
 
-    scope_name = f"neo4j-{scenario}"
+    scope_name = f"neo4j-ansible-{scenario}"
     if notebook_path is None:
-        notebook_path = f"/Shared/neo4j-{scenario}-connectivity-test"
+        notebook_path = f"/Shared/neo4j-ansible-{scenario}-connectivity-test"
 
     try:
         from src.databricks_setup import run_databricks_setup
@@ -782,6 +809,8 @@ def setup_databricks(
             scope_name=scope_name,
             notebook_path=notebook_path,
             client=client,
+            dbfs_probe_path=f"dbfs:/neo4j-ansible/{scenario}/neo4j_classic_probe.py",
+            serverless_probe_path=f"/Shared/neo4j-ansible-{scenario}-serverless-probe.py",
         )
     except Exception as e:
         console.print(f"[red]Setup failed: {e}[/red]")
@@ -798,6 +827,205 @@ def setup_databricks(
         Panel(table, title="[bold green]Databricks Setup Complete[/bold green]", border_style="green")
     )
 
+
+# Fixed, globally-registered Azure AD application ID for the Databricks platform service.
+# Identical across all tenants — used to acquire an AAD token for the Databricks Account API.
+_DATABRICKS_PLATFORM_APP_ID = "2ff814a6-3304-4ab8-85cb-cd0e6f879c1d"
+
+
+@app.command("setup-ncc")
+def setup_ncc_cmd(
+    scenario: Annotated[
+        str,
+        typer.Option("--scenario", "-s", help="Scenario name (must have a complete deployment JSON)"),
+    ],
+    domain_name: Annotated[
+        str,
+        typer.Option(
+            "--domain-name",
+            help="Hostname to use in the NCC PE rule domain_names list. "
+                 "The serverless Neo4j driver must connect using this hostname.",
+        ),
+    ] = "neo4j.private",
+    pls_name: Annotated[
+        str,
+        typer.Option("--pls-name", help="Private Link Service resource name (default: pls-neo4j)"),
+    ] = "pls-neo4j",
+    ncc_name: Annotated[
+        str,
+        typer.Option(
+            "--ncc-name",
+            help="Databricks NCC name. Defaults to 'neo4j-ncc-ansible-<scenario>'. "
+                 "NCCs are account-level objects shared across workspaces in the same region — "
+                 "use a scenario-scoped name when multiple deployments need isolated NCCs.",
+        ),
+    ] = "",
+    account_profile: Annotated[
+        Optional[str],
+        typer.Option(
+            "--account-profile",
+            help="~/.databrickscfg profile for the Databricks Account API (must have host + account_id). "
+                 "Example: azure-account-admin. If omitted, falls back to AAD token from az login.",
+        ),
+    ] = None,
+) -> None:
+    """
+    Create a Databricks NCC, attach it to the workspace, and establish a private endpoint
+    to the Neo4j Private Link Service for serverless compute connectivity.
+
+    Reads .deployments/{scenario}-ansible.json and:
+    - Creates or reuses a Databricks NCC in the workspace region
+    - Attaches the NCC to the workspace
+    - Creates a PE rule with domain_names=[--domain-name] pointing at the PLS
+    - Polls for the Pending endpoint connection and approves it via Azure CLI
+
+    Auth: pass --account-profile <name> for a ~/.databrickscfg profile that has
+    host + account_id (e.g. azure-account-admin). Falls back to AAD token from az login.
+
+    After setup-ncc completes, use 'bolt://<domain-name>:7687' in serverless notebooks.
+
+    Note: requires Databricks Account Admin in the account console
+    (https://accounts.azuredatabricks.net → Settings → Admins).
+    """
+    import subprocess as _sp
+
+    details_file = find_deployment_file(scenario, DEPLOYMENTS_DIR, Engine.ansible)
+    if not details_file:
+        console.print(f"[red]No ansible deployment found for scenario: {scenario}[/red]")
+        console.print(f"[dim]Run: ansible-deploy deploy --scenario {scenario}[/dim]")
+        raise typer.Exit(1)
+
+    with open(details_file) as f:
+        details = json.load(f)
+
+    if details.get("state") != "complete":
+        console.print("[red]Deployment is not in a complete state.[/red]")
+        raise typer.Exit(1)
+
+    neo4j_rg: str = details.get("neo4j_resource_group", "")
+    databricks_rg: str = details.get("databricks_resource_group", "")
+
+    if not neo4j_rg or not databricks_rg:
+        console.print("[red]Missing neo4j_resource_group or databricks_resource_group in deployment JSON.[/red]")
+        raise typer.Exit(1)
+
+    # Use saved PLS resource ID if present; otherwise construct deterministically.
+    saved_pls_id: str = (details.get("network") or {}).get("private_link_service_id", "")
+
+    try:
+        sub_result = _sp.run(
+            ["az", "account", "show", "--query", "id", "--output", "tsv"],
+            capture_output=True, text=True, check=True,
+        )
+        subscription_id = sub_result.stdout.strip()
+    except _sp.CalledProcessError as e:
+        console.print(f"[red]Failed to get Azure subscription ID: {e.stderr}[/red]")
+        raise typer.Exit(1)
+
+    pls_resource_id = saved_pls_id or (
+        f"/subscriptions/{subscription_id}"
+        f"/resourceGroups/{neo4j_rg}"
+        f"/providers/Microsoft.Network/privateLinkServices/{pls_name}"
+    )
+
+    try:
+        region_result = _sp.run(
+            ["az", "group", "show", "--name", databricks_rg, "--query", "location", "--output", "tsv"],
+            capture_output=True, text=True, check=True,
+        )
+        workspace_region = region_result.stdout.strip()
+    except _sp.CalledProcessError as e:
+        console.print(f"[red]Failed to get workspace region from '{databricks_rg}': {e.stderr}[/red]")
+        raise typer.Exit(1)
+
+    try:
+        ws_id_result = _sp.run(
+            [
+                "az", "databricks", "workspace", "list",
+                "--resource-group", databricks_rg,
+                "--query", "[0].workspaceId",
+                "--output", "tsv",
+            ],
+            capture_output=True, text=True, check=True,
+        )
+        workspace_id = int(ws_id_result.stdout.strip())
+    except (_sp.CalledProcessError, ValueError) as e:
+        console.print(f"[red]Failed to get Databricks workspace ID from '{databricks_rg}': {e}[/red]")
+        raise typer.Exit(1)
+
+    try:
+        token_result = _sp.run(
+            [
+                "az", "account", "get-access-token",
+                "--resource", _DATABRICKS_PLATFORM_APP_ID,
+                "--query", "accessToken",
+                "--output", "tsv",
+            ],
+            capture_output=True, text=True, check=True,
+        )
+        token = token_result.stdout.strip()
+    except _sp.CalledProcessError as e:
+        console.print(f"[red]Failed to get Databricks AAD token: {e.stderr}[/red]")
+        raise typer.Exit(1)
+
+    resolved_ncc_name = ncc_name or f"neo4j-ansi-{hashlib.sha1(scenario.encode()).hexdigest()[:8]}"
+
+    console.print(f"\n[bold]NCC Setup[/bold]")
+    console.print(f"  PLS resource ID:  [dim]{pls_resource_id}[/dim]")
+    console.print(f"  Workspace region: [dim]{workspace_region}[/dim]")
+    console.print(f"  Workspace ID:     [dim]{workspace_id}[/dim]")
+    console.print(f"  NCC name:         [dim]{resolved_ncc_name}[/dim]")
+    console.print(f"  domain_names:     [dim]{[domain_name]}[/dim]")
+
+    try:
+        from src.databricks_setup import setup_ncc
+        setup_ncc(
+            pls_resource_id=pls_resource_id,
+            workspace_id=workspace_id,
+            workspace_region=workspace_region,
+            resource_group=neo4j_rg,
+            pls_name=pls_name,
+            domain_names=[domain_name],
+            token=token,
+            ncc_name=resolved_ncc_name,
+            account_profile=account_profile,
+        )
+    except TimeoutError as e:
+        console.print(f"[yellow]⚠ {e}[/yellow]")
+        raise typer.Exit(1)
+    except Exception as e:
+        console.print(f"[red]NCC setup failed: {e}[/red]")
+        raise typer.Exit(1)
+
+    # Persist serverless block to deployment JSON (best-effort).
+    try:
+        with open(details_file) as _f:
+            _data = json.load(_f)
+        _data["serverless"] = {
+            "ncc_configured": True,
+            "domain_name": domain_name,
+            "bolt_uri": f"bolt://{domain_name}:{NEO4J_BOLT_PORT}",
+            "pls_name": pls_name,
+        }
+        with open(details_file, "w") as _f:
+            json.dump(_data, _f, indent=2)
+    except Exception as _e:
+        console.print(f"[yellow]Warning: could not update deployment JSON: {_e}[/yellow]")
+
+    bolt_uri = f"bolt://{domain_name}:{NEO4J_BOLT_PORT}"
+    table = Table(show_header=False, box=None, padding=(0, 2))
+    table.add_column("Label", style="cyan")
+    table.add_column("Value", style="white")
+    table.add_row("NCC name", resolved_ncc_name)
+    table.add_row("PLS name", pls_name)
+    table.add_row("domain_name", domain_name)
+    table.add_row("Serverless bolt URI", bolt_uri)
+    table.add_row("", "")
+    table.add_row("Next step", "Wait 10 minutes for NCC attachment to propagate, then:")
+    table.add_row("", f'neo4j-connect check --scenario {scenario} --compute serverless --engine ansible')
+    console.print(
+        Panel(table, title="[bold green]NCC Setup Complete[/bold green]", border_style="green")
+    )
 
 
 def main() -> None:

@@ -68,6 +68,7 @@
           vmss_id: "{{ neo4j_vmss_id }}"
           vmss_name: "{{ neo4j_vmss_name }}"
           lb_private_ip: "{{ lb_private_ip }}"
+          pls_resource_id: "{{ neo4j_pls_resource_id }}"
           resource_group: "{{ resource_group }}"
           resource_suffix: "{{ resource_suffix }}"
           neo4j_browser_url: "{{ 'http://vm000000.neo4j-' + resource_suffix + '.' + location + '.cloudapp.azure.com:7474' if (public_ip_enabled | bool) else '' }}"

@@ -13,6 +13,7 @@ from pathlib import Path
 
 from rich.console import Console
 
+from src.models import ComputeType
 from .base import DeploymentProfile, TestReport, TestResult, _print_result
 from .bolt import BoltChecker
 from .databricks import DatabricksChecker
@@ -69,14 +70,13 @@ def run_vnet_tests(deployment: dict) -> TestReport:
     return report
 
 
-def run_databricks_tests(deployment: dict, compute: str = "auto") -> TestReport:
+def run_databricks_tests(deployment: dict, compute: ComputeType = ComputeType.auto) -> TestReport:
     """
     Run Databricks connectivity checks: submit a SparkPythonTask probe that
     TCP- and Bolt-tests the Neo4j LB from inside Databricks compute.
 
-    compute may be "auto", "classic", "serverless", or "both".
-    When "auto", classic runs if workspace_host is present and serverless
-    runs if ncc_configured is set in the deployment's serverless block.
+    When ComputeType.auto, classic runs if workspace_host is present and
+    serverless runs if ncc_configured is set in the deployment's serverless block.
     """
     profile = DeploymentProfile.model_validate(deployment)
     lb_ip = profile.connection.lb_private_ip
@@ -87,12 +87,29 @@ def run_databricks_tests(deployment: dict, compute: str = "auto") -> TestReport:
     serverless_bolt_uri = profile.serverless.bolt_uri
     ncc_configured = profile.serverless.ncc_configured
 
-    run_classic = compute in ("classic", "both") or (compute == "auto" and bool(workspace_host))
-    run_serverless = compute in ("serverless", "both") or (compute == "auto" and ncc_configured)
+    # Derive engine-namespaced probe paths so Ansible and Bicep deployments never
+    # overwrite each other's DBFS/workspace files on the same workspace.
+    engine = deployment.get("engine", "")
+    scenario = deployment.get("scenario", "")
+    if engine == "ansible":
+        dbfs_probe_path = f"dbfs:/neo4j-ansible/{scenario}/neo4j_classic_probe.py"
+        serverless_probe_path = f"/Shared/neo4j-ansible-{scenario}-serverless-probe.py"
+    else:
+        from .databricks import DBFS_PROBE_PATH
+        from .databricks_serverless import WORKSPACE_SERVERLESS_PROBE_PATH
+        dbfs_probe_path = DBFS_PROBE_PATH
+        serverless_probe_path = WORKSPACE_SERVERLESS_PROBE_PATH
+
+    run_classic = compute in (ComputeType.classic, ComputeType.both) or (
+        compute == ComputeType.auto and bool(workspace_host)
+    )
+    run_serverless = compute in (ComputeType.serverless, ComputeType.both) or (
+        compute == ComputeType.auto and ncc_configured
+    )
 
     report = TestReport(label="Databricks connectivity checks")
 
-    if compute == "classic" and not workspace_host:
+    if compute == ComputeType.classic and not workspace_host:
         report.results.append(TestResult(
             "Classic compute check",
             False,
@@ -100,7 +117,7 @@ def run_databricks_tests(deployment: dict, compute: str = "auto") -> TestReport:
         ))
         return report
 
-    if compute == "serverless" and not ncc_configured:
+    if compute == ComputeType.serverless and not ncc_configured:
         report.results.append(TestResult(
             "Serverless compute check",
             False,
@@ -115,11 +132,12 @@ def run_databricks_tests(deployment: dict, compute: str = "auto") -> TestReport:
         console.print("[dim](progress messages from both jobs may interleave)[/dim]")
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
             classic_future = executor.submit(
-                DatabricksChecker(lb_ip, workspace_host, username, password).run
+                DatabricksChecker(lb_ip, workspace_host, username, password, dbfs_probe_path=dbfs_probe_path).run
             )
             serverless_future = executor.submit(
                 ServerlessDatabricksChecker(
-                    domain_name, serverless_bolt_uri, workspace_host, username, password
+                    domain_name, serverless_bolt_uri, workspace_host, username, password,
+                    serverless_probe_path=serverless_probe_path,
                 ).run
             )
             classic_results = classic_future.result()
@@ -134,13 +152,14 @@ def run_databricks_tests(deployment: dict, compute: str = "auto") -> TestReport:
             report.results.append(r)
     elif run_classic:
         console.print("\n[bold cyan]Classic compute checks[/bold cyan]")
-        for r in DatabricksChecker(lb_ip, workspace_host, username, password).run():
+        for r in DatabricksChecker(lb_ip, workspace_host, username, password, dbfs_probe_path=dbfs_probe_path).run():
             _print_result(r)
             report.results.append(r)
     elif run_serverless:
         console.print("\n[bold cyan]Serverless compute checks[/bold cyan]")
         for r in ServerlessDatabricksChecker(
-            domain_name, serverless_bolt_uri, workspace_host, username, password
+            domain_name, serverless_bolt_uri, workspace_host, username, password,
+            serverless_probe_path=serverless_probe_path,
         ).run():
             _print_result(r)
             report.results.append(r)

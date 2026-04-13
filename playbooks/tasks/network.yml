@@ -124,3 +124,52 @@
   ansible.builtin.set_fact:
     neo4j_vnet_id: "{{ vnet_result.state.id }}"
     neo4j_subnet_id: "/subscriptions/{{ lookup('env', 'AZURE_SUBSCRIPTION_ID') }}/resourceGroups/{{ resource_group }}/providers/Microsoft.Network/virtualNetworks/{{ vnet_name }}/subnets/subnet"
+
+# --- PLS subnet (Private Link Service NAT IPs) ---
+# Only needed for cluster deployments (node_count >= 3) where the ILB + PLS are deployed.
+# load_balancer_condition is not yet computed when this task file runs, so we evaluate
+# (node_count | int) >= 3 directly — it is the same condition.
+#
+# Azure requires privateLinkServiceNetworkPolicies: Disabled on the NAT subnet before a
+# Private Link Service can be created there. azure_rm_subnet does not expose this property
+# consistently across all collection versions, so a two-step approach is used: create the
+# subnet first, then update via azure_rm_resource to set the policy.
+#
+# 10.1.0.0/28 is within the VNet /8 address space but outside the main /16 to avoid overlap.
+# The /28 provides 11 usable addresses — Azure recommends ≥8 NAT IPs for PLS capacity.
+
+- name: Create PLS subnet
+  azure.azcollection.azure_rm_subnet:
+    resource_group: "{{ resource_group }}"
+    virtual_network_name: "{{ vnet_name }}"
+    name: pls-subnet
+    address_prefix_cidr: "10.1.0.0/28"
+    state: present
+  when: (node_count | int) >= 3
+
+- name: Disable network policies on pls-subnet
+  azure.azcollection.azure_rm_resource:
+    resource_group: "{{ resource_group }}"
+    provider: Network
+    resource_type: virtualNetworks
+    resource_name: "{{ vnet_name }}"
+    subresource:
+      - type: subnets
+        name: pls-subnet
+    api_version: "2023-11-01"
+    idempotency: false
+    body:
+      properties:
+        addressPrefix: "10.1.0.0/28"
+        privateLinkServiceNetworkPolicies: Disabled
+  when: (node_count | int) >= 3
+
+- name: Register PLS subnet ID
+  ansible.builtin.set_fact:
+    neo4j_pls_subnet_id: "/subscriptions/{{ lookup('env', 'AZURE_SUBSCRIPTION_ID') }}/resourceGroups/{{ resource_group }}/providers/Microsoft.Network/virtualNetworks/{{ vnet_name }}/subnets/pls-subnet"
+  when: (node_count | int) >= 3
+
+- name: Set empty PLS subnet ID for standalone deployments
+  ansible.builtin.set_fact:
+    neo4j_pls_subnet_id: ""
+  when: (node_count | int) < 3

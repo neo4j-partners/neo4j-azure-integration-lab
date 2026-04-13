@@ -10,6 +10,7 @@ each run to ensure it stays current.
 """
 
 import base64
+import io
 from pathlib import Path
 
 from rich.console import Console
@@ -51,10 +52,12 @@ class ServerlessDatabricksChecker(DatabricksCheckerBase):
         workspace_host: str,
         username: str = "neo4j",
         password: str = "",
+        serverless_probe_path: str = WORKSPACE_SERVERLESS_PROBE_PATH,
     ) -> None:
         super().__init__(workspace_host, username, password)
         self.domain_name = domain_name
         self.bolt_uri = bolt_uri
+        self.serverless_probe_path = serverless_probe_path
 
     def _ensure_probe_script(self, client) -> None:
         """Upload the serverless probe script to the workspace. Overwrites to keep it current."""
@@ -63,16 +66,26 @@ class ServerlessDatabricksChecker(DatabricksCheckerBase):
                 f"Serverless probe script not found: {_SERVERLESS_PROBE_PATH}\n"
                 "Run from the repo root or ensure notebooks/neo4j_serverless_probe.py exists."
             )
-        from databricks.sdk.service.workspace import ImportFormat, Language
+        # Delete any existing object first — overwrite=True fails when the existing
+        # object type (e.g. NOTEBOOK) differs from the type being uploaded (FILE).
+        try:
+            client.workspace.delete(path=self.serverless_probe_path, recursive=False)
+        except Exception:
+            pass  # Not found is fine; any other error will surface on the import below
+        from databricks.sdk.service.workspace import ImportFormat
         encoded = base64.b64encode(_SERVERLESS_PROBE_PATH.read_bytes()).decode()
+        # ImportFormat.AUTO (no language) creates ObjectType.FILE when the file has no
+        # "# Databricks notebook source" header. ImportFormat.SOURCE with language=PYTHON
+        # always creates ObjectType.NOTEBOOK — SparkPythonTask on serverless cannot open
+        # notebook objects as binary and returns ENOTSUP (errno 95). The probe script is
+        # a plain Python script with no notebook header, so AUTO produces a FILE.
         client.workspace.import_(
-            path=WORKSPACE_SERVERLESS_PROBE_PATH,
-            format=ImportFormat.SOURCE,
-            language=Language.PYTHON,
+            path=self.serverless_probe_path,
+            format=ImportFormat.AUTO,
             content=encoded,
             overwrite=True,
         )
-        console.print(f"[dim]Serverless probe script uploaded to {WORKSPACE_SERVERLESS_PROBE_PATH}[/dim]")
+        console.print(f"[dim]Serverless probe script uploaded to {self.serverless_probe_path}[/dim]")
 
     def _submit_serverless_job(self, client) -> int | None:
         """Submit the serverless probe job. Returns run_id or None on failure."""
@@ -84,7 +97,7 @@ class ServerlessDatabricksChecker(DatabricksCheckerBase):
                     task_key="serverless_probe",
                     environment_key="serverless-env",
                     spark_python_task=jobs.SparkPythonTask(
-                        python_file=f"/Workspace{WORKSPACE_SERVERLESS_PROBE_PATH}",
+                        python_file=f"/Workspace{self.serverless_probe_path}",
                         parameters=[self.domain_name, self.bolt_uri, self.username, self.password],
                     ),
                     # No new_cluster here — omitting it routes to serverless compute

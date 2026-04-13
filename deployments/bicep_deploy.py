@@ -5,6 +5,7 @@ Neo4j Azure Deployment Tools
 Main entry point for the deployment and testing framework.
 """
 
+import hashlib
 import json
 import sys
 import uuid
@@ -26,7 +27,7 @@ from src.deployment_output import (
     display_connection_info,
     write_deployment_json,
 )
-from src.models import CleanupMode, DeploymentState
+from src.models import CleanupMode, DeploymentState, Engine
 from src.setup import SetupWizard
 from src.utils import find_deployment_file
 
@@ -77,8 +78,8 @@ def _build_databricks_deployment_json(conn_info, outputs: dict, source_scenario:
     neo4j_rg = conn_info.resource_group
 
     if source_scenario:
-        source_file = find_deployment_file(source_scenario, DEPLOYMENTS_DIR)
-        if source_file and source_file.exists():
+        source_file = find_deployment_file(source_scenario, DEPLOYMENTS_DIR, Engine.bicep)
+        if source_file:
             with open(source_file) as f:
                 source_data = json.load(f)
             source_conn = source_data.get("connection", {})
@@ -469,6 +470,7 @@ def _submit_all_deployments(
 
         state = DeploymentState(
             deployment_id=deployment_id,
+            engine=Engine.bicep,
             resource_group_name=rg_name,
             deployment_name=deploy_name,
             scenario_name=s.name,
@@ -505,6 +507,14 @@ def _process_deployment_outputs(
 
     for state in deployment_states:
         final_status = final_statuses.get(state.deployment_id)
+        console.print(
+            f"[dim]_process_deployment_outputs: "
+            f"deployment_id={state.deployment_id} "
+            f"scenario={state.scenario_name} "
+            f"rg={state.resource_group_name} "
+            f"dbx_rg={state.databricks_resource_group} "
+            f"final_status={final_status}[/dim]"
+        )
 
         if final_status != "Succeeded":
             failed_count += 1
@@ -1115,7 +1125,7 @@ def setup_databricks(
     Create Databricks secrets and upload the connectivity test notebook for a Neo4j deployment.
 
     Reads .deployments/{scenario}-{engine}.json and:
-    - Creates a secrets scope named neo4j-{scenario}
+    - Creates a secrets scope named neo4j-bicep-{scenario}
     - Uploads 5 secrets: bolt_uri, host, username, password, database
     - Uploads the connectivity test notebook to the Databricks workspace
 
@@ -1127,9 +1137,9 @@ def setup_databricks(
     from rich.panel import Panel
     from rich.table import Table
 
-    details_file = find_deployment_file(scenario, DEPLOYMENTS_DIR)
+    details_file = find_deployment_file(scenario, DEPLOYMENTS_DIR, Engine.bicep)
     if not details_file:
-        console.print(f"[red]No deployment found for scenario: {scenario}[/red]")
+        console.print(f"[red]No bicep deployment found for scenario: {scenario}[/red]")
         console.print(f"[dim]Run: uv run bicep-deploy deploy --scenario {scenario}[/dim]")
         raise typer.Exit(1)
 
@@ -1185,7 +1195,7 @@ def setup_databricks(
             raise typer.Exit(1)
         client = WorkspaceClient(host=workspace_host, token=aad_token)
 
-    scope_name = f"neo4j-{scenario}"
+    scope_name = f"neo4j-bicep-{scenario}"
     if notebook_path is None:
         notebook_path = f"/Shared/neo4j-{scenario}-connectivity-test"
 
@@ -1239,11 +1249,19 @@ def setup_ncc_cmd(
         str,
         typer.Option(
             "--ncc-name",
-            help="Databricks NCC name. Defaults to 'neo4j-ncc-<scenario>'. "
-                 "NCCs are account-level objects shared across workspaces in the same region — "
-                 "use a scenario-scoped name when multiple deployments need isolated NCCs.",
+            help="Databricks NCC name. Defaults to 'neo4j-bicep-<sha1(scenario)[:8]>'. "
+                 "NCCs are account-level objects — name must be ≤30 chars. "
+                 "Use a unique name when multiple deployments need isolated NCCs.",
         ),
     ] = "",
+    account_profile: Annotated[
+        Optional[str],
+        typer.Option(
+            "--account-profile",
+            help="~/.databrickscfg profile for the Databricks Account API (must have host + account_id). "
+                 "Example: azure-account-admin. If omitted, falls back to AAD token from az login.",
+        ),
+    ] = None,
 ) -> None:
     """
     Create a Databricks NCC, attach it to the workspace, and establish a private endpoint
@@ -1255,8 +1273,8 @@ def setup_ncc_cmd(
     - Creates a PE rule with domain_names=[--domain-name] pointing at the PLS
     - Polls for the Pending endpoint connection and approves it via Azure CLI
 
-    Auth: uses the current 'az login' session — no extra credentials required.
-    The same AAD token works for both the Databricks Account API and PLS approval.
+    Auth: pass --account-profile <name> for a ~/.databrickscfg profile that has
+    host + account_id (e.g. azure-account-admin). Falls back to AAD token from az login.
 
     After setup-ncc completes, use 'bolt://<domain-name>:7687' in serverless notebooks.
     """
@@ -1265,9 +1283,9 @@ def setup_ncc_cmd(
     from rich.panel import Panel
     from rich.table import Table
 
-    details_file = find_deployment_file(scenario, DEPLOYMENTS_DIR)
+    details_file = find_deployment_file(scenario, DEPLOYMENTS_DIR, Engine.bicep)
     if not details_file:
-        console.print(f"[red]No deployment found for scenario: {scenario}[/red]")
+        console.print(f"[red]No bicep deployment found for scenario: {scenario}[/red]")
         console.print(f"[dim]Run: uv run bicep-deploy deploy --scenario {scenario}[/dim]")
         raise typer.Exit(1)
 
@@ -1348,7 +1366,7 @@ def setup_ncc_cmd(
         raise typer.Exit(1)
 
     # Default NCC name to scenario-scoped name when not explicitly provided
-    resolved_ncc_name = ncc_name or f"neo4j-ncc-{scenario}"
+    resolved_ncc_name = ncc_name or f"neo4j-bicep-{hashlib.sha1(scenario.encode()).hexdigest()[:8]}"
 
     # --- Run NCC setup ---
     console.print(f"\n[bold]NCC Setup[/bold]")
@@ -1369,6 +1387,7 @@ def setup_ncc_cmd(
             domain_names=[domain_name],
             token=token,
             ncc_name=resolved_ncc_name,
+            account_profile=account_profile,
         )
     except TimeoutError as e:
         console.print(f"[yellow]⚠ {e}[/yellow]")

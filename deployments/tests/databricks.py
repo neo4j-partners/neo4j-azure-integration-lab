@@ -43,9 +43,17 @@ def _skipped(reason: str) -> list[TestResult]:
 
 
 class DatabricksChecker(DatabricksCheckerBase):
-    def __init__(self, lb_ip: str, workspace_host: str, username: str = "neo4j", password: str = "") -> None:
+    def __init__(
+        self,
+        lb_ip: str,
+        workspace_host: str,
+        username: str = "neo4j",
+        password: str = "",
+        dbfs_probe_path: str = DBFS_PROBE_PATH,
+    ) -> None:
         super().__init__(workspace_host, username, password)
         self.lb_ip = lb_ip
+        self.dbfs_probe_path = dbfs_probe_path
 
     def _ensure_probe_script(self, client) -> None:
         """Upload the classic probe script to DBFS. Overwrites to keep it current."""
@@ -55,8 +63,8 @@ class DatabricksChecker(DatabricksCheckerBase):
                 "Run from the repo root or ensure notebooks/neo4j_classic_probe.py exists."
             )
         encoded = base64.b64encode(_CLASSIC_PROBE_PATH.read_bytes()).decode()
-        client.dbfs.put(path=DBFS_PROBE_PATH, contents=encoded, overwrite=True)
-        console.print(f"[dim]Probe script uploaded to {DBFS_PROBE_PATH}[/dim]")
+        client.dbfs.put(path=self.dbfs_probe_path, contents=encoded, overwrite=True)
+        console.print(f"[dim]Probe script uploaded to {self.dbfs_probe_path}[/dim]")
 
     def _get_cluster_params(self, client) -> tuple[str, str]:
         """Return (spark_version, node_type_id) auto-detected from the workspace."""
@@ -94,7 +102,7 @@ class DatabricksChecker(DatabricksCheckerBase):
                 tasks=[jobs.SubmitTask(
                     task_key="tcp_probe",
                     spark_python_task=jobs.SparkPythonTask(
-                        python_file=DBFS_PROBE_PATH,
+                        python_file=self.dbfs_probe_path,
                         parameters=[self.lb_ip, self.username, self.password],
                     ),
                     libraries=[compute.Library(pypi=compute.PythonPyPiLibrary(package="neo4j"))],

@@ -60,6 +60,31 @@ uv run ansible-deploy status  --scenario standalone-v2025
 uv run ansible-deploy cleanup --scenario standalone-v2025
 ```
 
+### Post-deployment: Databricks secrets and notebooks
+
+After a `peer-databricks-v2025` deployment, run `setup-databricks` to create the Databricks secrets scope and upload the connectivity test notebooks — including the serverless probe script used by `neo4j-connect check --compute serverless`:
+
+```bash
+uv run ansible-deploy setup-databricks --scenario peer-databricks-v2025
+```
+
+### Post-deployment: Private Link for serverless compute
+
+To enable connectivity from Databricks **serverless** notebooks and SQL warehouses (which run outside the VNet-injected compute plane), run `setup-ncc` after deployment. This wires the Private Link Service on the Neo4j ILB to a Databricks Network Connectivity Configuration so serverless compute can reach Neo4j over a private path without VNet peering.
+
+```bash
+uv run ansible-deploy setup-ncc --scenario peer-databricks-v2025 --account-profile <databricks-account-admin-profile>
+```
+
+### Run connectivity checks
+
+```bash
+# Run all checks — Databricks classic and serverless auto-detected from deployment profile
+uv run neo4j-connect check --scenario peer-databricks-v2025 --engine ansible
+```
+
+See [testing.md](testing.md) for the full reference. See the [Neo4j + Databricks](#neo4j--databricks-private-connectivity) section below for full details on both commands, the `bolt://neo4j.private:7687` URI, and per-compute-mode check commands.
+
 ---
 
 ## Scenarios
@@ -139,6 +164,8 @@ uv run ansible-deploy deploy --scenario cluster-v2025 --resource-group neo4j-acm
 
 ## Neo4j + Databricks (private connectivity)
 
+### Deployment overview
+
 The `peer-databricks-v2025` scenario deploys a 3-node Neo4j cluster and an Azure Databricks workspace in the same region, wires them together with VNet peering, and replaces the Internet-open NSG rules with Databricks-scoped ones. After deployment the only path into the Neo4j cluster is from the Databricks container subnet — port 22 from the internet remains open for SSH.
 
 The two playbooks run sequentially as a single `deploy` invocation:
@@ -148,7 +175,16 @@ The two playbooks run sequentially as a single `deploy` invocation:
 
 Partial state is written after step 1 so `cleanup` can find both resource groups even if step 2 fails mid-run.
 
-Connect from a Databricks notebook using the LB private IP printed in the `status` output. Use the `neo4j://` scheme so the driver fetches a routing table through the LB and discovers all three cluster nodes:
+### Classic compute connectivity
+
+Classic compute uses VNet-injected job clusters that have a direct route to the Neo4j VNet via the peering. Run `setup-databricks` first to create the secrets scope and upload the connectivity notebooks — it uses an AAD token from the active `az login` session, no PAT required:
+
+```bash
+cd deployments
+uv run ansible-deploy setup-databricks --scenario peer-databricks-v2025
+```
+
+Connect using the LB private IP printed in the `status` output. Use `neo4j://` so the driver fetches a routing table through the LB and discovers all three cluster nodes:
 
 ```python
 from neo4j import GraphDatabase
@@ -156,14 +192,34 @@ driver = GraphDatabase.driver("neo4j://<lb-private-ip>:7687", auth=("neo4j", "<p
 driver.verify_connectivity()
 ```
 
-Run automated connectivity checks after deployment:
+Verify with the automated check:
 
 ```bash
 cd deployments
-uv run neo4j-connect check --scenario peer-databricks-v2025
+uv run neo4j-connect check --scenario peer-databricks-v2025 --engine ansible --compute classic
 ```
 
-See [testing.md](testing.md) for the full reference, and [databricks-validate.md](databricks-validate.md) for the manual notebook workflow.
+See [databricks-validate.md](databricks-validate.md) for the manual notebook workflow.
+
+### Serverless compute connectivity
+
+Serverless compute runs on Databricks-managed infrastructure outside the customer subscription and has no route through the VNet peering. Connectivity requires a Private Link Service on the Neo4j ILB (provisioned by the deployment) wired to a Databricks Network Connectivity Configuration. Run `setup-ncc` to create the NCC, attach it to the workspace, create a private endpoint rule pointing at the PLS, and approve the resulting connection:
+
+```bash
+cd deployments
+uv run ansible-deploy setup-ncc --scenario peer-databricks-v2025 --account-profile <databricks-account-admin-profile>
+```
+
+From serverless notebooks, use `bolt://neo4j.private:7687`. Do not use `neo4j://` — the routing protocol returns VMSS node IPs that are not reachable from serverless infrastructure (see implementation notes).
+
+Verify with the automated check:
+
+```bash
+cd deployments
+uv run neo4j-connect check --scenario peer-databricks-v2025 --engine ansible --compute serverless
+```
+
+See [testing.md](testing.md) for the full connectivity check reference.
 
 ---
 
@@ -188,6 +244,10 @@ az group delete -n rg-neo4j-demo --yes
 
 These are non-obvious behaviors discovered during development that affect anyone extending the playbooks.
 
+**Uploading Python scripts to the workspace: `ImportFormat.AUTO`, not `SOURCE + language`**
+
+`workspace.import_()` with `format=ImportFormat.SOURCE` and `language=Language.PYTHON` always creates an `ObjectType.NOTEBOOK` — not a plain file. The Databricks API docs confirm this: the `language` field is defined as "set only if the object type is `NOTEBOOK`". `SparkPythonTask` on serverless compute calls `open()` on the workspace file path; notebook objects return `ENOTSUP` (errno 95) when opened as binary. To upload a Python script that `SparkPythonTask` can execute, use `format=ImportFormat.AUTO` with no `language` argument. `AUTO` analyzes the file's content header: files that do not begin with `# Databricks notebook source` are imported as `ObjectType.FILE`. Additionally, `overwrite=True` does not work when the existing object type differs from the type being uploaded — delete the existing object first before re-uploading if the type may have changed.
+
 **ansible-core 2.20: dict keys are not templated**
 
 In ansible-core 2.20 and later, a YAML dict key containing a Jinja2 expression — `"{{ var }}": {}` — is passed as a literal string, not resolved. This breaks the Azure Managed Identity body, which requires `{ "<resource-id>": {} }` as the `userAssignedIdentities` value. The fix is to build the dict in a `set_fact` task using a Jinja2 dict expression where the variable is the key:
@@ -211,9 +271,17 @@ The `inbound7687` and `inbound7688` load-balancing rules both reference `httppro
 
 `nsg_update.yml` uses `purge_rules: true`, which replaces the full NSG ruleset in one Azure PUT. Azure's processing may briefly omit the `AzureLoadBalancerProbe` allow rule during the transition. With `numberOfProbes: 1` on the LB probe, a single missed probe is enough to mark all backends unhealthy — the LB then RSTs all inbound connections via `enableTcpReset: true`. Any Databricks notebook or driver connecting to the LB during this ~5-second window receives `errno 111`. A 30-second pause after the NSG PUT (`nsg_update.yml`, `Wait for LB probes to recover`) gives probes time to re-establish before deployment is declared complete.
 
-**Databricks Serverless compute cannot reach the private LB IP**
+**Databricks Serverless compute requires Private Link Service and NCC**
 
-The Neo4j internal load balancer has a private frontend IP (`10.0.0.4` in the default address space). Databricks Serverless compute runs on Databricks-managed infrastructure outside the customer subscription — it is not VNet-injected and has no route to private RFC-1918 addresses. Connecting from a Serverless notebook to the LB private IP returns `errno 111` regardless of NSG or peering configuration. The connectivity notebook must run on a **VNet-injected all-purpose cluster**: in the workspace, create a new cluster using Standard (not Serverless) compute. The workspace VNet injection settings propagate automatically, giving the cluster a route to the Neo4j VNet via the VNet peering. The automated `neo4j-connect check` command always creates a fresh job cluster for this reason.
+Databricks Serverless compute runs on Databricks-managed infrastructure outside the customer subscription — it is not VNet-injected and has no route to private RFC-1918 addresses. The VNet peering used by classic compute does not carry traffic for serverless workloads. To reach the Neo4j ILB from Serverless compute, the deployment must include:
+
+1. A dedicated `pls-subnet` (`10.1.0.0/28`) with `privateLinkServiceNetworkPolicies: Disabled` (created by `tasks/network.yml` on cluster deployments)
+2. A Private Link Service (`pls-neo4j`) attached to the ILB frontend IP, using `pls-subnet` for NAT IP allocation (created by `tasks/loadbalancer.yml`)
+3. A Databricks Network Connectivity Configuration (NCC) attached to the workspace, with a Private Endpoint rule pointing at the PLS (provisioned by `ansible-deploy setup-ncc`)
+
+Once the NCC is attached, Databricks Serverless compute resolves `neo4j.private` to the private endpoint IP and opens a TCP path through the PLS into the ILB. Classic compute connectivity via VNet peering is unaffected. Use `bolt://neo4j.private:7687` (not `neo4j://`) for Serverless connections — `neo4j://` triggers a routing table request that returns the VMSS node IPs, which are not reachable from Serverless infrastructure.
+
+The automated `neo4j-connect check --compute classic` command uses a fresh VNet-injected job cluster. `neo4j-connect check --compute serverless` uses Serverless compute and requires `setup-ncc` to have been run first.
 
 **Databricks managed resource group deletion order**
 
@@ -262,6 +330,31 @@ public_ip_enabled: false
 ```
 
 When `public_ip_enabled` is `false`, individual nodes are accessible only via Azure Bastion or an SSH tunnel through another host. The internal load balancer is unaffected.
+
+### Private Link Service visibility
+
+The Private Link Service (`pls-neo4j`) is deployed with `visibility.subscriptions: ['*']`, which allows any Azure subscription to request a private endpoint connection to the PLS. This is acceptable for demo and testing use. In production, restrict visibility to the specific Databricks platform subscription ID:
+
+1. Run `ansible-deploy setup-ncc` once on a test deployment.
+2. After the PE connection is approved, retrieve the Databricks-side subscription ID:
+   ```bash
+   az network private-link-service show \
+     --resource-group <neo4j-rg> \
+     --name pls-neo4j \
+     --query "privateEndpointConnections[*].{name:name, peId:privateEndpoint.id}" \
+     --output json
+   ```
+3. Extract the subscription ID embedded in the `peId` value (the segment after `/subscriptions/`).
+4. In `playbooks/tasks/loadbalancer.yml`, replace `"*"` in `visibility.subscriptions` with that subscription ID.
+
+### NCC attachment side effects
+
+`ansible-deploy setup-ncc` attaches a Network Connectivity Configuration to the Databricks workspace, which changes the workspace's serverless networking mode. In production, be aware of the following:
+
+- Attaching an NCC takes up to 10 minutes to propagate. Restart any running serverless services in the workspace after attachment.
+- Each Azure Databricks account supports up to 10 NCCs per region, with 100 private endpoints per region distributed across those NCCs.
+- Use separate NCCs for different environments (dev, staging, production) rather than sharing one NCC across all workspaces.
+- After attaching an NCC, re-run the classic compute VNet checks (`neo4j-connect check --checks databricks --compute classic`) to confirm the VNet peering path is unaffected by the networking mode change.
 
 ### HTTP connector (port 7474)
 

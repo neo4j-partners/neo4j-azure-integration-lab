@@ -2,20 +2,20 @@
 """
 Neo4j connectivity test suite.
 
-Engine-agnostic: reads .deployments/{scenario}-{engine}.json and runs
-VNet-internal and Databricks cross-VNet checks.
+Reads .deployments/{scenario}-{engine}.json and runs VNet-internal and
+Databricks cross-VNet checks. --engine is required: bicep or ansible.
 """
 
 import json
 from enum import Enum
 from pathlib import Path
-from typing import Optional
 
 import typer
 from rich.console import Console
 from rich.table import Table
 from typing_extensions import Annotated
 
+from src.models import ComputeType, Engine
 from src.utils import find_deployment_file
 
 DEPLOYMENTS_DIR = Path(__file__).parent.parent / ".deployments"
@@ -41,39 +41,35 @@ def check(
         str,
         typer.Option("--scenario", "-s", help="Scenario name (e.g. peer-databricks-v2025)"),
     ],
+    engine: Annotated[
+        Engine,
+        typer.Option("--engine", "-e", help="Deployment engine: bicep or ansible"),
+    ],
     checks: Annotated[
         CheckSuite,
         typer.Option("--checks", "-c", help="Which checks to run: vnet, databricks, or all (default: all)"),
     ] = CheckSuite.all,
-    engine: Annotated[
-        Optional[str],
-        typer.Option(
-            "--engine", "-e",
-            help="Engine to use when both -bicep.json and -ansible.json exist for this scenario (bicep or ansible)",
-        ),
-    ] = None,
-    update_doc: Annotated[
-        Optional[Path],
-        typer.Option("--update-doc", help="Markdown file to insert results into (replaces existing section on re-run)"),
-    ] = None,
     compute: Annotated[
-        str,
+        ComputeType,
         typer.Option(
             "--compute",
             "-C",
             help=(
-                "Compute type to test: classic, serverless, both, or auto. "
+                "Databricks compute type: classic, serverless, both, or auto. "
                 "auto (default) runs classic when databricks_workspace_host is present "
                 "and adds serverless when serverless.ncc_configured is set."
             ),
         ),
-    ] = "auto",
+    ] = ComputeType.auto,
+    update_doc: Annotated[
+        Path | None,
+        typer.Option("--update-doc", help="Markdown file to insert results into (replaces existing section on re-run)"),
+    ] = None,
 ) -> None:
     """
     Run connectivity checks for a deployed Neo4j scenario.
 
-    Reads .deployments/{scenario}-bicep.json or .deployments/{scenario}-ansible.json.
-    When both exist, uses the most recently modified unless --engine is specified.
+    Reads .deployments/{scenario}-{engine}.json — engine is required.
 
     [bold]VNet checks[/bold] (--checks vnet): peering, NSG rules, VMSS instance state,
     Neo4j service health per node, and LB Bolt connectivity. Runs entirely via the
@@ -86,34 +82,19 @@ def check(
     with no workspace. ~5-8 minutes (cluster cold start).
 
     Examples:
-        uv run neo4j-connect check --scenario peer-databricks-v2025
-        uv run neo4j-connect check --scenario peer-databricks-v2025 --checks vnet
-        uv run neo4j-connect check --scenario peer-databricks-v2025 --checks databricks
         uv run neo4j-connect check --scenario peer-databricks-v2025 --engine bicep
-        uv run neo4j-connect check --scenario peer-databricks-v2025 --update-doc no-connect-v2.md
+        uv run neo4j-connect check --scenario peer-databricks-v2025 --engine bicep --checks vnet
+        uv run neo4j-connect check --scenario peer-databricks-v2025 --engine ansible --checks databricks
+        uv run neo4j-connect check --scenario peer-databricks-v2025 --engine bicep --update-doc no-connect-v2.md
     """
-    # Resolve deployment profile
-    if engine:
-        profile = DEPLOYMENTS_DIR / f"{scenario}-{engine}.json"
-        if not profile.exists():
-            console.print(f"[red]No {engine} deployment found for scenario: {scenario}[/red]")
-            console.print(f"[dim]Expected: {profile}[/dim]")
-            raise typer.Exit(1)
-        details_file = profile
-    else:
-        details_file = find_deployment_file(scenario, DEPLOYMENTS_DIR)
-        if not details_file:
-            console.print(f"[red]No deployment found for scenario: {scenario}[/red]")
-            console.print(f"[dim]Deploy first: bicep-deploy deploy or ansible-deploy deploy[/dim]")
-            raise typer.Exit(1)
+    details_file = find_deployment_file(scenario, DEPLOYMENTS_DIR, engine)
+    if not details_file:
+        console.print(f"[red]No {engine.value} deployment found for scenario: {scenario}[/red]")
+        console.print(f"[dim]Run: {engine.value}-deploy deploy --scenario {scenario}[/dim]")
+        raise typer.Exit(1)
 
     with open(details_file) as f:
         deployment = json.load(f)
-
-    valid_compute = ("auto", "classic", "serverless", "both")
-    if compute not in valid_compute:
-        console.print(f"[red]Invalid --compute value '{compute}'. Choose from: {', '.join(valid_compute[1:])}[/red]")
-        raise typer.Exit(1)
 
     console.print(
         f"\n[dim]Profile: {details_file.name} (engine: {deployment.get('engine', 'unknown')})[/dim]"
@@ -182,15 +163,13 @@ def status() -> None:
     by_scenario: dict[str, list[dict]] = {}
     for p in profiles:
         stem = p.stem
-        if stem.endswith("-bicep"):
-            scenario_name = stem[:-6]
-            engine = "bicep"
-        elif stem.endswith("-ansible"):
-            scenario_name = stem[:-8]
-            engine = "ansible"
+        matched = next((e for e in Engine if stem.endswith(f"-{e.value}")), None)
+        if matched:
+            scenario_name = stem[:-(len(matched.value) + 1)]
+            engine_label = matched.value
         else:
             scenario_name = stem
-            engine = "unknown"
+            engine_label = "unknown"
 
         try:
             with open(p) as f:
@@ -200,7 +179,7 @@ def status() -> None:
 
         conn = data.get("connection", {})
         by_scenario.setdefault(scenario_name, []).append({
-            "engine": engine,
+            "engine": engine_label,
             "state": data.get("state", "unknown"),
             "created_at": data.get("created_at", ""),
             "lb_ip": conn.get("lb_private_ip", ""),

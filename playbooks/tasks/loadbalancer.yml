@@ -72,3 +72,52 @@
     lb_backend_pool_id: ""
     lb_private_ip: ""
   when: not (load_balancer_condition | bool)
+
+# --- Private Link Service ---
+# Fronts the ILB so Databricks serverless compute can reach Neo4j via a private endpoint.
+# Serverless compute runs outside the customer VNet and has no route to private IPs —
+# the only path is through an NCC PE rule pointing at this PLS. Created via azure_rm_resource
+# (raw ARM) since azure.azcollection has no dedicated azure_rm_privatelinkservice module.
+#
+# visibility.subscriptions: ['*'] — demo only. In production, replace '*' with the Databricks
+# platform subscription ID retrieved after the first setup-ncc run. See docs/ansible.md.
+# autoApproval.subscriptions: [] — all PE connections require explicit approval via setup-ncc.
+
+- name: Create Private Link Service
+  azure.azcollection.azure_rm_resource:
+    resource_group: "{{ resource_group }}"
+    provider: Network
+    resource_type: privateLinkServices
+    resource_name: "{{ pls_name }}"
+    api_version: "2024-07-01"
+    idempotency: true
+    body:
+      location: "{{ location }}"
+      properties:
+        loadBalancerFrontendIpConfigurations:
+          - id: "{{ lb_result.state.frontend_ip_configurations[0].id }}"
+        ipConfigurations:
+          - name: pls-nat-ip
+            properties:
+              subnet:
+                id: "{{ neo4j_pls_subnet_id }}"
+              privateIPAllocationMethod: Dynamic
+              primary: true
+        visibility:
+          subscriptions:
+            - "*"
+        autoApproval:
+          subscriptions: []
+        enableProxyProtocol: false
+  register: pls_result
+  when: load_balancer_condition | bool
+
+- name: Register PLS resource ID
+  ansible.builtin.set_fact:
+    neo4j_pls_resource_id: "{{ pls_result.response.id }}"
+  when: load_balancer_condition | bool
+
+- name: Set empty PLS resource ID when load balancer is not deployed
+  ansible.builtin.set_fact:
+    neo4j_pls_resource_id: ""
+  when: not (load_balancer_condition | bool)

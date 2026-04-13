@@ -34,6 +34,22 @@ class DeploymentType(str, Enum):
     DATABRICKS_PEERING = "databricks-peering"
 
 
+class Engine(str, Enum):
+    """Deployment engine — bicep (Azure Bicep / ARM) or ansible (Ansible playbook)."""
+
+    bicep = "bicep"
+    ansible = "ansible"
+
+
+class ComputeType(str, Enum):
+    """Databricks compute type for connectivity checks."""
+
+    classic = "classic"
+    serverless = "serverless"
+    both = "both"
+    auto = "auto"
+
+
 class TestScenario(BaseModel):
     """Configuration for a single test scenario."""
 
@@ -187,6 +203,7 @@ class DeploymentState(BaseModel):
     """State tracking for a deployment."""
 
     deployment_id: str = Field(..., description="Unique deployment identifier")
+    engine: Engine = Field(Engine.bicep, description="Deployment engine that owns this state entry")
     resource_group_name: str = Field(..., description="Azure resource group name")
     deployment_name: str = Field(..., description="Azure deployment name")
     scenario_name: str = Field(..., description="Scenario name")

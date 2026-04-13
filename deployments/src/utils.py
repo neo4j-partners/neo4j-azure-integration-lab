@@ -12,6 +12,7 @@ import yaml
 from rich.console import Console
 
 from .constants import TIMESTAMP_FORMAT
+from .models import Engine
 
 console = Console()
 
@@ -46,21 +47,10 @@ def run_command(
     )
 
 
-def find_deployment_file(scenario: str, deployments_dir: Path) -> Path | None:
-    """
-    Find the deployment JSON for a scenario.
-
-    Checks {scenario}-bicep.json and {scenario}-ansible.json. Returns the
-    most recently modified match when both exist, or None if neither is found.
-    """
-    candidates = [
-        deployments_dir / f"{scenario}-bicep.json",
-        deployments_dir / f"{scenario}-ansible.json",
-    ]
-    existing = [p for p in candidates if p.exists()]
-    if existing:
-        return max(existing, key=lambda p: p.stat().st_mtime)
-    return None
+def find_deployment_file(scenario: str, deployments_dir: Path, engine: Engine) -> Path | None:
+    """Return the deployment JSON path for the given scenario and engine, or None if not found."""
+    path = deployments_dir / f"{scenario}-{engine.value}.json"
+    return path if path.exists() else None
 
 
 def get_git_branch() -> Optional[str]:

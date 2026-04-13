@@ -16,7 +16,7 @@ from typing import Any, Optional
 from rich.console import Console
 
 from .constants import PARAMS_DIR
-from .models import Settings, TestScenario
+from .models import Engine, Settings, TestScenario
 from .password import PasswordManager
 from .utils import find_deployment_file
 from .utils import (
@@ -132,12 +132,12 @@ class DeploymentEngine:
 
         # Load source scenario's saved deployment JSON
         deployments_dir = Path(__file__).parent.parent.parent / ".deployments"
-        source_file = find_deployment_file(scenario.source_scenario, deployments_dir)
+        source_file = find_deployment_file(scenario.source_scenario, deployments_dir, Engine.bicep)
         if not source_file:
             raise FileNotFoundError(
-                f"Source scenario deployment not found: {scenario.source_scenario}-bicep.json"
-                f" or {scenario.source_scenario}-ansible.json in {deployments_dir}\n"
-                f"Deploy '{scenario.source_scenario}' first, then run this scenario."
+                f"Source bicep deployment not found: {scenario.source_scenario}-bicep.json"
+                f" in {deployments_dir}\n"
+                f"Deploy '{scenario.source_scenario}' first: bicep-deploy deploy --scenario {scenario.source_scenario}"
             )
 
         with open(source_file) as f:

@@ -22,3 +22,4 @@ vnet_name: "vnet-neo4j-{{ location }}-{{ resource_suffix }}"
 identity_name: "usermanaged-neo4j-{{ location }}-{{ resource_suffix }}"
 lb_name: "lb-neo4j-{{ location }}-{{ resource_suffix }}"
 vmss_name: "vmss-neo4j-{{ location }}-{{ resource_suffix }}"
+pls_name: pls-neo4j

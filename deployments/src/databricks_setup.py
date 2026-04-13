@@ -7,10 +7,12 @@ only handles the Databricks API calls that are identical between the two paths.
 """
 
 import base64
+import io
 import json as _json
 import subprocess
 import time
 from pathlib import Path
+from typing import Optional
 
 from rich.console import Console
 
@@ -40,6 +42,8 @@ def run_databricks_setup(
     scope_name: str,
     notebook_path: str,
     client,
+    dbfs_probe_path: str = DBFS_PROBE_PATH,
+    serverless_probe_path: str = WORKSPACE_SERVERLESS_PROBE_PATH,
 ) -> None:
     """
     Create a Databricks secrets scope, upload the connectivity test notebook,
@@ -54,6 +58,8 @@ def run_databricks_setup(
         scope_name: Databricks secrets scope name to create
         notebook_path: Workspace path for the connectivity test notebook
         client: Authenticated databricks.sdk.WorkspaceClient instance
+        dbfs_probe_path: DBFS path for the classic probe script (default: shared path)
+        serverless_probe_path: Workspace path for the serverless probe script (default: shared path)
 
     Raises:
         FileNotFoundError: If the connectivity test notebook is not found
@@ -113,9 +119,9 @@ def run_databricks_setup(
             f"Classic probe script not found: {_CLASSIC_PROBE_PATH}\n"
             f"Expected at: {NOTEBOOKS_DIR}"
         )
-    console.print(f"\n[bold]Uploading classic probe script to DBFS:[/bold] {DBFS_PROBE_PATH}")
+    console.print(f"\n[bold]Uploading classic probe script to DBFS:[/bold] {dbfs_probe_path}")
     probe_encoded = base64.b64encode(_CLASSIC_PROBE_PATH.read_bytes()).decode()
-    client.dbfs.put(path=DBFS_PROBE_PATH, contents=probe_encoded, overwrite=True)
+    client.dbfs.put(path=dbfs_probe_path, contents=probe_encoded, overwrite=True)
     console.print("[green]✓ Classic probe script uploaded[/green]")
 
     # --- Upload serverless probe script to workspace (DBFS unavailable on serverless) ---
@@ -126,10 +132,17 @@ def run_databricks_setup(
             f"Expected at: {NOTEBOOKS_DIR}"
         )
 
-    console.print(f"\n[bold]Uploading serverless probe script to:[/bold] {WORKSPACE_SERVERLESS_PROBE_PATH}")
+    console.print(f"\n[bold]Uploading serverless probe script to:[/bold] {serverless_probe_path}")
+    from databricks.sdk.service.workspace import ImportFormat, Language
+    # Delete any existing object first — overwrite=True fails when the existing
+    # object type (e.g. NOTEBOOK) differs from the type being uploaded (FILE).
+    try:
+        client.workspace.delete(path=serverless_probe_path, recursive=False)
+    except Exception:
+        pass
     serverless_probe_encoded = base64.b64encode(serverless_probe_local.read_bytes()).decode()
     client.workspace.import_(
-        path=WORKSPACE_SERVERLESS_PROBE_PATH,
+        path=serverless_probe_path,
         format=ImportFormat.SOURCE,
         language=Language.PYTHON,
         content=serverless_probe_encoded,
@@ -250,6 +263,7 @@ def setup_ncc(
     token: str,
     ncc_name: str = "neo4j-ncc",
     account_host: str = "https://accounts.azuredatabricks.net",
+    account_profile: Optional[str] = None,
 ) -> None:
     """
     Create or reuse a Databricks NCC, attach it to the workspace, create a PE rule
@@ -261,18 +275,25 @@ def setup_ncc(
     domain_names must contain the hostname(s) the Neo4j driver will use to connect.
     ncc_name controls which NCC is created/reused — use a scenario-scoped name when
     multiple deployments in the same region need isolated NCCs.
+    account_profile: if set, creates AccountClient from this ~/.databrickscfg profile
+    (reads host, account_id, and auth from the profile) instead of using token+host.
     """
     from databricks.sdk import AccountClient
 
-    account_client = AccountClient(host=account_host, token=token)
+    if account_profile:
+        account_client = AccountClient(profile=account_profile)
+    else:
+        account_client = AccountClient(host=account_host, token=token)
+
+    from databricks.sdk.service.settings import CreateNetworkConnectivityConfiguration, CreatePrivateEndpointRule
+    from databricks.sdk.service.provisioning import Workspace
 
     # --- Create or reuse NCC ---
-    nccs = list(account_client.network_connectivity.list_network_connectivity_configs())
+    nccs = list(account_client.network_connectivity.list_network_connectivity_configurations())
     ncc = next((n for n in nccs if n.name == ncc_name), None)
     if ncc is None:
-        ncc = account_client.network_connectivity.create_network_connectivity_config(
-            name=ncc_name,
-            region=workspace_region,
+        ncc = account_client.network_connectivity.create_network_connectivity_configuration(
+            CreateNetworkConnectivityConfiguration(name=ncc_name, region=workspace_region),
         )
         console.print(f"[green]✓ Created NCC: {ncc_name} (region: {workspace_region})[/green]")
     else:
@@ -281,7 +302,9 @@ def setup_ncc(
     # --- Attach NCC to workspace ---
     account_client.workspaces.update(
         workspace_id=workspace_id,
-        network_connectivity_config_id=ncc.network_connectivity_config_id,
+        customer_facing_workspace=Workspace(
+            network_connectivity_config_id=ncc.network_connectivity_config_id,
+        ),
     )
     console.print("[green]✓ NCC attached to workspace[/green]")
 
@@ -295,8 +318,10 @@ def setup_ncc(
     if pe_rule is None:
         account_client.network_connectivity.create_private_endpoint_rule(
             network_connectivity_config_id=ncc.network_connectivity_config_id,
-            resource_id=pls_resource_id,
-            domain_names=domain_names,
+            private_endpoint_rule=CreatePrivateEndpointRule(
+                resource_id=pls_resource_id,
+                domain_names=domain_names,
+            ),
         )
         console.print(
             f"[green]✓ PE rule created[/green] [dim](domain_names={domain_names})[/dim]\n"
