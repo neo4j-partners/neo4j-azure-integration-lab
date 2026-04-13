@@ -81,8 +81,6 @@ cd deployments
 uv run $CLI setup-databricks --scenario peer-databricks-v2025
 ```
 
-See [docs/databricks-validate.md](../docs/databricks-validate.md) for the full notebook walkthrough.
-
 ### Private Link for serverless notebooks
 
 Run `setup-ncc` to create the Databricks Network Connectivity Configuration and the Private Link Service endpoint. This is the connectivity path for **serverless notebooks**, which run outside the injected VNet and cannot use VNet peering.
@@ -101,8 +99,6 @@ neo4j://neo4j.private:7687
 **About `neo4j.private`:** This hostname is the default value of the `--domain-name` parameter on `setup-ncc`. It is passed to the Databricks NCC Private Endpoint rule as the `domain_names` value when the rule is created. Databricks automatically creates internal DNS routing so that `neo4j.private` resolves to the private endpoint IP inside serverless compute containers, with no Azure Private DNS Zone, no Route 53, and no external DNS infrastructure required. The hostname is arbitrary and fixed for the life of the PE rule; to use a different name, pass `--domain-name <your-hostname>` to `setup-ncc` before the NCC is created.
 
 Both `neo4j://` and `bolt://` work for this URI. `bolt://` sends all traffic directly through the Private Link tunnel to the ILB and is the recommended choice for serverless. `neo4j://` also works: the driver issues a ROUTE request, receives a routing table containing each node's public cloudapp.azure.com FQDN (not directly reachable from serverless), and falls back to the bootstrap router (the ILB via the PE tunnel) when those addresses are unavailable; queries still succeed, but all traffic goes through the ILB either way. `SHOW SERVERS` returns all three cluster members because that reflects Neo4j's internal cluster state, not individual node reachability from the client.
-
-See [docs/databricks-validate.md](../docs/databricks-validate.md#serverless-compute-connectivity-private-link) for the notebook snippet.
 
 ---
 
