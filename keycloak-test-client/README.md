@@ -49,8 +49,8 @@ The `realm-export.json` creates:
 
 All three client roles are assigned to the service account. Two protocol mappers are configured on the client:
 
-1. **User Client Role mapper** — flattens client roles into a top-level `roles` claim in the access token, required because Neo4j's `dbms.security.oidc.*.claims.groups` only reads top-level claims.
-2. **Audience mapper** — adds `neo4j-client` to the `aud` claim so it matches the `dbms.security.oidc.m2m.audience` value Neo4j expects. Without this, Keycloak defaults `aud` to `account` (an internal client) and Neo4j rejects the token.
+1. **User Client Role mapper**: flattens client roles into a top-level `roles` claim in the access token, required because Neo4j's `dbms.security.oidc.*.claims.groups` only reads top-level claims.
+2. **Audience mapper**: adds `neo4j-client` to the `aud` claim so it matches the `dbms.security.oidc.m2m.audience` value Neo4j expects. Without this, Keycloak defaults `aud` to `account` (an internal client) and Neo4j rejects the token.
 
 ## Token Claims Structure
 

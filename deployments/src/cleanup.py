@@ -15,6 +15,7 @@ from rich.table import Table
 
 from .models import CleanupMode, DeploymentState
 from .resource_groups import ResourceGroupManager
+from .utils import run_command
 
 console = Console()
 
@@ -47,6 +48,41 @@ class CleanupSummary(BaseModel):
     failed: int = Field(..., description="Failed to clean up")
     skipped: int = Field(..., description="Skipped (based on cleanup rules)")
     results: list[CleanupResult] = Field(default_factory=list, description="Individual results")
+
+
+def _delete_pls_connections(resource_group: str, pls_name: str = "pls-neo4j") -> None:
+    """Delete all private endpoint connections on the PLS before RG deletion.
+
+    When the Databricks RG is deleted, Azure removes the PE from the Databricks side but
+    leaves the connection record on the PLS in the Neo4j RG. That stale record blocks
+    deletion of the PLS (and by extension the entire resource group).
+    """
+    result = run_command(
+        [
+            "az", "network", "private-link-service", "show",
+            "--resource-group", resource_group,
+            "--name", pls_name,
+            "--query", "privateEndpointConnections[].name",
+            "--output", "tsv",
+        ],
+        check=False,
+    )
+    if result.returncode != 0 or not result.stdout.strip():
+        return
+    for conn_name in result.stdout.strip().splitlines():
+        conn_name = conn_name.strip()
+        if not conn_name:
+            continue
+        console.print(f"[dim]Removing PLS connection {conn_name} from {pls_name}...[/dim]")
+        run_command(
+            [
+                "az", "network", "private-link-service", "connection", "delete",
+                "--resource-group", resource_group,
+                "--service-name", pls_name,
+                "--name", conn_name,
+            ],
+            check=False,
+        )
 
 
 class CleanupManager:
@@ -237,6 +273,11 @@ class CleanupManager:
             console.print(
                 f"[yellow]⚠ Warning: Force deleting unmanaged resource group: {rg_name}[/yellow]"
             )
+
+        # Clear any stale PLS private endpoint connections before deleting the Neo4j RG.
+        # Deleting the Databricks RG removes the PE from the Databricks side but leaves the
+        # connection record on pls-neo4j, which blocks deletion of the Neo4j resource group.
+        _delete_pls_connections(rg_name)
 
         # Delete resource group
         success = self.rg_manager.delete_resource_group(rg_name, no_wait=no_wait)

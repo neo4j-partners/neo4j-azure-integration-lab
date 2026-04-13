@@ -4,7 +4,7 @@ A Databricks notebook calls `driver.session().run("MATCH (n) RETURN n")`. The pa
 
 Private network connectivity adds a layer on top of encryption. VNet peering routes traffic over the Microsoft backbone so it never reaches a public network; TLS encryption continues to protect the connection end to end across that private path. The two controls are independent: encryption protects against interception anywhere along the route, and network isolation removes the public route entirely. For organizations with compliance requirements that specify both controls, the combination is what makes this architecture worth the additional configuration.
 
-This architecture builds both private routes. Bolt connections from VNet-injected Databricks job clusters traverse a direct VNet peering over the Microsoft backbone. Bolt connections from serverless compute — SQL warehouses, Mosaic AI agent endpoints, Lakeflow pipelines — travel through a Private Link tunnel on the same backbone. No packet leaves the Microsoft network regardless of which compute mode initiates the query.
+This architecture builds both private routes. Bolt connections from VNet-injected Databricks job clusters traverse a direct VNet peering over the Microsoft backbone. Bolt connections from serverless compute (SQL warehouses, Mosaic AI agent endpoints, Lakeflow pipelines) travel through a Private Link tunnel on the same backbone. No packet leaves the Microsoft network regardless of which compute mode initiates the query.
 
 ---
 
@@ -123,7 +123,7 @@ A Network Connectivity Configuration is an account-level Azure Databricks resour
 
 ### Driver Protocol for Serverless
 
-Serverless connections through the Private Link path support both `neo4j://` and `bolt://` — use `neo4j://neo4j.private:7687` to get full cluster-aware routing across all three nodes. The driver sends an initial ROUTE request, receives a routing table from Neo4j, and distributes reads and writes across the cluster. `bolt://neo4j.private:7687` also works as a direct fallback: it bypasses the routing table and sends all queries over a single connection to the ILB, which load-balances across the backend pool.
+Serverless connections through the Private Link path support both `neo4j://` and `bolt://`; use `neo4j://neo4j.private:7687` to get full cluster-aware routing across all three nodes. The driver sends an initial ROUTE request, receives a routing table from Neo4j, and distributes reads and writes across the cluster. `bolt://neo4j.private:7687` also works as a direct fallback: it bypasses the routing table and sends all queries over a single connection to the ILB, which load-balances across the backend pool.
 
 VNet-injected job clusters use `neo4j://` and get full cluster-aware driver behavior. The peering makes the entire Neo4j VNet routable from the container subnet, so a job cluster fetches the routing table, receives the individual VMSS node IPs, and opens direct connections to each.
 

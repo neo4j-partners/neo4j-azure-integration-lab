@@ -2,7 +2,7 @@
 
 This guide walks through deploying a three-node Neo4j Enterprise Edition cluster and a Databricks workspace connected over private VNet peering, verifying the peering, and testing the connectivity from a Databricks notebook. All Neo4j database ports are restricted to the Databricks VNet CIDR after the peering deployment; browser and Bolt access from a local machine requires an SSH tunnel.
 
-The repository provides two equivalent deployment tools — Bicep templates under `infra/` and Ansible playbooks under `playbooks/` — exposed as two CLIs (`bicep-deploy` and `ansible-deploy`). Both produce the same Azure resources, write to `.deployments/{scenario}-{engine}.json` (e.g. `peer-databricks-v2025-bicep.json` or `peer-databricks-v2025-ansible.json`), and drive the same connectivity-test notebook. Pick one and use it consistently throughout this guide.
+The repository provides two equivalent deployment tools, Bicep templates under `infra/` and Ansible playbooks under `playbooks/`, exposed as two CLIs (`bicep-deploy` and `ansible-deploy`). Both produce the same Azure resources, write to `.deployments/{scenario}-{engine}.json` (e.g. `peer-databricks-v2025-bicep.json` or `peer-databricks-v2025-ansible.json`), and drive the same connectivity-test notebook. Pick one and use it consistently throughout this guide.
 
 ---
 
@@ -41,7 +41,7 @@ uv run $CLI setup
 
 ## Step 1: Deploy Neo4j and the Databricks Peering
 
-This step provisions the three-node Neo4j Enterprise Edition cluster (VMSS plus internal load balancer in their own resource group and VNet), the Databricks workspace with VNet injection and Secure Cluster Connectivity, and the bidirectional VNet peering between the two VNets. When it completes, all connection details — Neo4j password, LB private IP, Databricks workspace URL, and resource group names — are saved to `.deployments/peer-databricks-v2025-bicep.json` (Bicep) or `.deployments/peer-databricks-v2025-ansible.json` (Ansible).
+This step provisions the three-node Neo4j Enterprise Edition cluster (VMSS plus internal load balancer in their own resource group and VNet), the Databricks workspace with VNet injection and Secure Cluster Connectivity, and the bidirectional VNet peering between the two VNets. When it completes, all connection details (Neo4j password, LB private IP, Databricks workspace URL, and resource group names) are saved to `.deployments/peer-databricks-v2025-bicep.json` (Bicep) or `.deployments/peer-databricks-v2025-ansible.json` (Ansible).
 
 **Ansible (single command):**
 
@@ -62,7 +62,7 @@ uv run bicep-deploy deploy --scenario peer-databricks-v2025
 
 The first command deploys Neo4j and writes `.deployments/cluster-v2025-bicep.json`. The second command deploys the Databricks workspace, establishes the peering, updates the NSG, and writes the merged `.deployments/peer-databricks-v2025-bicep.json` combining the Neo4j data from step one with the new Databricks workspace data.
 
-The full deployment takes approximately 10 to 15 minutes. The Neo4j password is generated once and is not recoverable outside the saved JSON — note it from the terminal output or read it later with:
+The full deployment takes approximately 10 to 15 minutes. The Neo4j password is generated once and is not recoverable outside the saved JSON; note it from the terminal output or read it later with:
 
 ```bash
 cat .deployments/peer-databricks-v2025-bicep.json | python3 -c "import json,sys; print(json.load(sys.stdin)['connection']['password'])"
@@ -74,7 +74,7 @@ cat .deployments/peer-databricks-v2025-bicep.json | python3 -c "import json,sys;
 
 ### Databricks secrets and connectivity notebook
 
-Run `setup-databricks` to create the secrets scope and upload the connectivity test notebook to the workspace. This is used by **VNet-injected job clusters**. Authentication uses an AAD token from the active `az login` session — no PAT required. Pass `--token <pat>` only if you prefer a personal access token over AAD.
+Run `setup-databricks` to create the secrets scope and upload the connectivity test notebook to the workspace. This is used by **VNet-injected job clusters**. Authentication uses an AAD token from the active `az login` session, with no PAT required. Pass `--token <pat>` only if you prefer a personal access token over AAD.
 
 ```bash
 cd deployments
@@ -92,15 +92,15 @@ cd deployments
 uv run $CLI setup-ncc --scenario peer-databricks-v2025 --account-profile <databricks-account-admin-profile>
 ```
 
-`--account-profile` names a `~/.databrickscfg` profile that has Databricks account admin credentials — required to call the account-level NCC API. This command creates an engine-namespaced NCC, attaches it to the workspace, creates a private endpoint rule pointing at the `pls-neo4j` Private Link Service, and approves the resulting endpoint connection — all from the current `az login` session. When it completes it prints the URI to use from serverless notebooks:
+`--account-profile` names a `~/.databrickscfg` profile that has Databricks account admin credentials, required to call the account-level NCC API. This command creates an engine-namespaced NCC, attaches it to the workspace, creates a private endpoint rule pointing at the `pls-neo4j` Private Link Service, and approves the resulting endpoint connection, all from the current `az login` session. When it completes it prints the URI to use from serverless notebooks:
 
 ```
 neo4j://neo4j.private:7687
 ```
 
-**About `neo4j.private`:** This hostname is the default value of the `--domain-name` parameter on `setup-ncc`. It is passed to the Databricks NCC Private Endpoint rule as the `domain_names` value when the rule is created. Databricks automatically creates internal DNS routing so that `neo4j.private` resolves to the private endpoint IP inside serverless compute containers — no Azure Private DNS Zone, no Route 53, and no external DNS infrastructure is required. The hostname is arbitrary and fixed for the life of the PE rule; to use a different name, pass `--domain-name <your-hostname>` to `setup-ncc` before the NCC is created.
+**About `neo4j.private`:** This hostname is the default value of the `--domain-name` parameter on `setup-ncc`. It is passed to the Databricks NCC Private Endpoint rule as the `domain_names` value when the rule is created. Databricks automatically creates internal DNS routing so that `neo4j.private` resolves to the private endpoint IP inside serverless compute containers, with no Azure Private DNS Zone, no Route 53, and no external DNS infrastructure required. The hostname is arbitrary and fixed for the life of the PE rule; to use a different name, pass `--domain-name <your-hostname>` to `setup-ncc` before the NCC is created.
 
-Both `neo4j://` and `bolt://` work for this URI. `bolt://` sends all traffic directly through the Private Link tunnel to the ILB and is the recommended choice for serverless. `neo4j://` also works: the driver issues a ROUTE request, receives a routing table containing each node's public cloudapp.azure.com FQDN (not directly reachable from serverless), and falls back to the bootstrap router (the ILB via the PE tunnel) when those addresses are unavailable — so queries still succeed, but all traffic goes through the ILB either way. `SHOW SERVERS` returns all three cluster members because that reflects Neo4j's internal cluster state, not individual node reachability from the client.
+Both `neo4j://` and `bolt://` work for this URI. `bolt://` sends all traffic directly through the Private Link tunnel to the ILB and is the recommended choice for serverless. `neo4j://` also works: the driver issues a ROUTE request, receives a routing table containing each node's public cloudapp.azure.com FQDN (not directly reachable from serverless), and falls back to the bootstrap router (the ILB via the PE tunnel) when those addresses are unavailable; queries still succeed, but all traffic goes through the ILB either way. `SHOW SERVERS` returns all three cluster members because that reflects Neo4j's internal cluster state, not individual node reachability from the client.
 
 See [docs/databricks-validate.md](../docs/databricks-validate.md#serverless-compute-connectivity-private-link) for the notebook snippet.
 
@@ -281,8 +281,8 @@ Both CLIs write to the same JSON schema under `.deployments/`, differentiated by
 
 | File | Contents |
 |------|----------|
-| `.deployments/peer-databricks-v2025-bicep.json` | Bicep — merged state after both Neo4j and Databricks deployments: Neo4j connection (URI, password, LB private IP), SSH info, resource group names, VNet and NSG resource IDs, and the Databricks workspace URL |
-| `.deployments/peer-databricks-v2025-ansible.json` | Ansible — same schema, written by `ansible-deploy deploy --scenario peer-databricks-v2025` |
+| `.deployments/peer-databricks-v2025-bicep.json` | Bicep: merged state after both Neo4j and Databricks deployments: Neo4j connection (URI, password, LB private IP), SSH info, resource group names, VNet and NSG resource IDs, and the Databricks workspace URL |
+| `.deployments/peer-databricks-v2025-ansible.json` | Ansible: same schema, written by `ansible-deploy deploy --scenario peer-databricks-v2025` |
 | `.deployments/cluster-v2025-bicep.json` | Bicep-only intermediate file written after step one of the two-command Bicep flow. Ansible does not produce this file because its deploy command is single-step |
 | `.arm-testing/state/active-deployments.json` | Deployment IDs and statuses used by the cleanup command |
 

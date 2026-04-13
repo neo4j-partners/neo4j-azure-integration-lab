@@ -2,8 +2,8 @@
 
 The setup wizard includes an optional step to configure M2M (Machine-to-Machine) authentication. This allows services, APIs, and automated processes to connect to Neo4j using OAuth 2.0 bearer tokens. Two OIDC providers are supported:
 
-- **Keycloak** — Deploy Keycloak to Azure Container Apps, then the wizard reads OIDC values from the Keycloak deployment automatically
-- **Microsoft Entra ID** — Create app registrations via Azure CLI (automatic) or enter values manually
+- **Keycloak**: Deploy Keycloak to Azure Container Apps, then the wizard reads OIDC values from the Keycloak deployment automatically
+- **Microsoft Entra ID**: Create app registrations via Azure CLI (automatic) or enter values manually
 
 During setup, the wizard presents three options:
 

@@ -337,14 +337,14 @@ The deployment CLI supports Keycloak as a first-class OIDC provider alongside En
 The M2M setup step is a three-way selection:
 
 1. **No M2M authentication**
-2. **Keycloak** — reads `keycloak-infra/.deployment.json` automatically. If not found at the default path, prompts for a file path. Shows a summary table of loaded values and a preview of the `neo4j.conf` OIDC block. Validates the discovery URI with an HTTP GET before saving.
-3. **Entra ID** — existing automatic and manual flows, unchanged.
+2. **Keycloak**: reads `keycloak-infra/.deployment.json` automatically. If not found at the default path, prompts for a file path. Shows a summary table of loaded values and a preview of the `neo4j.conf` OIDC block. Validates the discovery URI with an HTTP GET before saving.
+3. **Entra ID**: existing automatic and manual flows, unchanged.
 
 When the user selects Keycloak, every OIDC value is populated from `.deployment.json` with no manual entry required. The client secret is saved to `settings.yaml` (acceptable for a demo where the secret is a known value generated per deployment).
 
 ### OIDC config generation (`deployment.py`)
 
-`_generate_oidc_config` checks `provider_type`. When `"keycloak"`, it builds the config block from the generic fields (`discovery_uri`, `audience`, `role_mapping`, `username_claim`, `groups_claim`, `token_type_config`, `display_name`, `oidc_visible`) instead of constructing Entra-specific values from a tenant ID. The generated string passes through the Bicep `replace()` chain and cloud-init `echo -e` expansion unchanged — the same escaping path proven by the Entra role mapping (which also contains double quotes and semicolons).
+`_generate_oidc_config` checks `provider_type`. When `"keycloak"`, it builds the config block from the generic fields (`discovery_uri`, `audience`, `role_mapping`, `username_claim`, `groups_claim`, `token_type_config`, `display_name`, `oidc_visible`) instead of constructing Entra-specific values from a tenant ID. The generated string passes through the Bicep `replace()` chain and cloud-init `echo -e` expansion unchanged, following the same escaping path proven by the Entra role mapping (which also contains double quotes and semicolons).
 
 `generate_neo4j_oidc_config` in `m2m_setup.py` uses the same branching logic to show the user a preview during setup.
 
@@ -359,7 +359,7 @@ The script detects `provider_type` from the deployment info JSON and routes to o
 - **`get_bearer_token_oidc`** (Keycloak): Plain HTTP POST to the token endpoint with `grant_type=client_credentials`, `client_id`, and `client_secret`. Uses the existing `requests` dependency. Reads `client_secret` from the deployment info (or `NEO4J_CLIENT_SECRET` env var as fallback).
 - **`get_bearer_token_entra`** (Entra ID): MSAL `ConfidentialClientApplication`, unchanged from the original implementation. MSAL import is deferred to this path only.
 
-The rest of the script — JWT decoding, Neo4j connection with `bearer_auth()`, role verification via `SHOW CURRENT USER` — is provider-agnostic.
+The rest of the script (JWT decoding, Neo4j connection with `bearer_auth()`, and role verification via `SHOW CURRENT USER`) is provider-agnostic.
 
 ### `.deployment.json` format
 

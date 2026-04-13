@@ -40,7 +40,7 @@ The deployment runs in two steps: first the Container Registry (so the image can
 | Container Apps Environment | Hosting environment with HTTPS ingress |
 | Container App (Keycloak 26.5.6) | Keycloak in dev mode, 1 CPU / 2 GiB, 1 replica |
 
-The Container App uses a managed identity to pull images from ACR — no admin credentials are stored or passed.
+The Container App uses a managed identity to pull images from ACR, with no admin credentials stored or passed.
 
 The Keycloak image is built from `Dockerfile`, which copies `realm-export.json` into the stock Keycloak 26.5.6 image so the Neo4j realm is auto-imported on every startup.
 

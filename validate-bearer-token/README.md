@@ -114,7 +114,7 @@ cd validate-bearer-token
 uv run validate_bearer.py --scenario standalone-v2025
 ```
 
-This acquires a token from the Azure Keycloak instance, tests basic auth, and then tests bearer token auth against Neo4j. No environment variables needed — the client secret is read from the deployment JSON.
+This acquires a token from the Azure Keycloak instance, tests basic auth, and then tests bearer token auth against Neo4j. No environment variables needed; the client secret is read from the deployment JSON.
 
 To validate only the token (without connecting to Neo4j):
 
@@ -122,7 +122,7 @@ To validate only the token (without connecting to Neo4j):
 uv run validate_bearer.py --scenario standalone-v2025 --validate-token
 ```
 
-You can also test against a local Keycloak started via `keycloak-test-client/` — just ensure the `.deployments/{scenario}-{engine}.json` points to `http://localhost:8080` as the token endpoint.
+You can also test against a local Keycloak started via `keycloak-test-client/`; just ensure the `.deployments/{scenario}-{engine}.json` points to `http://localhost:8080` as the token endpoint.
 
 ## Troubleshooting
 

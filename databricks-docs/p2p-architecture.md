@@ -22,7 +22,7 @@ The result is a Databricks workspace where VNet-injected job clusters reach Neo4
 
 VNet-injected job clusters require no configuration beyond what the components above already provide. The PLS and NCC are optional and needed only when serverless compute must reach Neo4j.
 
-Serverless is a significant part of the Databricks platform. SQL warehouses — the default compute behind Databricks SQL and interactive notebook queries — run on serverless infrastructure, as do serverless jobs, Lakeflow Spark Declarative Pipelines, and model serving endpoints. Model serving is the infrastructure that Mosaic AI agent deployments run on: an AI agent that queries Neo4j from a Databricks serving endpoint executes on serverless, not on a VNet-injected job cluster. Data quality monitoring and predictive optimization also run on serverless infrastructure. Without the PLS and NCC, none of those workloads can reach the Neo4j cluster over a private path. The PLS and NCC together create the private tunnel that serverless requires and are provisioned by `uv run bicep-deploy setup-ncc` or `uv run ansible-deploy setup-ncc` after the cluster and Databricks workspace are deployed.
+Serverless is a significant part of the Databricks platform. SQL warehouses (the default compute behind Databricks SQL and interactive notebook queries) run on serverless infrastructure, as do serverless jobs, Lakeflow Spark Declarative Pipelines, and model serving endpoints. Model serving is the infrastructure that Mosaic AI agent deployments run on: an AI agent that queries Neo4j from a Databricks serving endpoint executes on serverless, not on a VNet-injected job cluster. Data quality monitoring and predictive optimization also run on serverless infrastructure. Without the PLS and NCC, none of those workloads can reach the Neo4j cluster over a private path. The PLS and NCC together create the private tunnel that serverless requires and are provisioned by `uv run bicep-deploy setup-ncc` or `uv run ansible-deploy setup-ncc` after the cluster and Databricks workspace are deployed.
 
 Two deployment tools in this repository produce this architecture: Bicep templates under `infra/` and Ansible playbooks under `playbooks/`. They are equivalent; pick whichever fits your operational preference. See the [Deployment](#deployment) section at the bottom of this document for the file layout of each path.
 
@@ -176,7 +176,7 @@ NCCs are created at the Databricks account level and are region-scoped: an NCC c
 
 When a Private Endpoint Rule is added to an NCC, Databricks provisions a private endpoint from its managed infrastructure to the target Azure resource. For a custom Private Link Service (a `Microsoft.Network/privateLinkServices` resource, as opposed to a first-party service like Storage or SQL), the rule specifies the PLS ARM resource ID. The private endpoint request appears on the PLS as a connection in `Pending` state. It stays in that state until the customer approves it, at which point the NCC rule transitions to `ESTABLISHED` and serverless compute can use the path.
 
-The PE rule also carries a `domain_names` list — one or more hostnames that serverless compute uses to address the private endpoint. In this deployment the value is `["neo4j.private"]`. When Databricks provisions the private endpoint it creates internal DNS routing so that `neo4j.private` resolves to the private endpoint IP from inside serverless compute containers. No Azure Private DNS Zone, no Route 53, and no external DNS infrastructure is required. The `.private` TLD has no special meaning; it is an arbitrary label chosen to avoid clashing with real DNS namespaces. The hostname is fixed for the life of the PE rule and becomes the address notebooks use: `neo4j://neo4j.private:7687`. To use a different hostname, change `domain_names_entry` in the deployment scenario configuration before running `setup-ncc`.
+The PE rule also carries a `domain_names` list: one or more hostnames that serverless compute uses to address the private endpoint. In this deployment the value is `["neo4j.private"]`. When Databricks provisions the private endpoint it creates internal DNS routing so that `neo4j.private` resolves to the private endpoint IP from inside serverless compute containers. No Azure Private DNS Zone, no Route 53, and no external DNS infrastructure is required. The `.private` TLD has no special meaning; it is an arbitrary label chosen to avoid clashing with real DNS namespaces. The hostname is fixed for the life of the PE rule and becomes the address notebooks use: `neo4j://neo4j.private:7687`. To use a different hostname, change `domain_names_entry` in the deployment scenario configuration before running `setup-ncc`.
 
 ### Provisioning Sequence
 
@@ -190,15 +190,13 @@ The approval step requires the Azure CLI identity to have write access on the Ne
 
 ### Driver Protocol for Serverless Compute
 
-Both `bolt://` and `neo4j://` work from serverless compute when connecting through the Private Link path in this deployment. End-to-end validation — DNS resolution of `neo4j.private`, TCP 7687, TCP 7474, Bolt driver, cluster topology, and routing-mode connectivity — passes for both URI schemes.
+Both `bolt://` and `neo4j://` work from serverless compute when connecting through the Private Link path in this deployment. End-to-end validation passes for both URI schemes, covering DNS resolution of `neo4j.private`, TCP 7687, TCP 7474, Bolt driver, cluster topology, and routing-mode connectivity.
 
-**`bolt://neo4j.private:7687`** sends all traffic directly through the Private Link tunnel to the ILB without consulting the routing table. The ILB distributes connections across the VMSS backend pool. This is the simpler, more explicit path and the recommended choice for serverless notebooks.
+**`neo4j://neo4j.private:7687`** is the recommended URI for serverless notebooks. It issues a ROUTE request to get the cluster routing table and provides full cluster topology awareness; `SHOW SERVERS` returns all three cluster members as ENABLED. The cloud-init configuration sets `server.bolt.advertised_address` to each node's public cloudapp.azure.com FQDN (`vm0.neo4j-{id}.{region}.cloudapp.azure.com:7687`). Those FQDNs resolve to the individual VMSS instance public IPs, but port 7687 on those IPs is blocked by the NSG (now restricted to the Databricks VNet CIDR). The Neo4j driver handles this gracefully: when routing table members are unavailable it retries via the bootstrap router (the ILB, reachable through the Private Link tunnel) so queries still complete. In practice all queries go through the ILB, but the driver maintains the full cluster topology picture.
 
-**`neo4j://neo4j.private:7687`** issues a ROUTE request first to get the cluster routing table. The cloud-init configuration sets `server.bolt.advertised_address` to each node's public cloudapp.azure.com FQDN (`vm0.neo4j-{id}.{region}.cloudapp.azure.com:7687`). Those FQDNs resolve to the individual VMSS instance public IPs, but port 7687 on those IPs is blocked by the NSG (now restricted to the Databricks VNet CIDR). The routing table therefore contains addresses that are not directly reachable from serverless compute. The Neo4j Python driver handles this gracefully: when routing table members are unavailable it retries via the bootstrap router — which is the ILB, reachable through the Private Link tunnel — so queries still complete. `SHOW SERVERS` returns all three cluster members as ENABLED because that reflects Neo4j's internal cluster membership state, not the reachability of individual nodes from the client. In practice, all queries go through the ILB regardless of URI scheme.
+**`bolt://neo4j.private:7687`** also works as a direct fallback. It sends all traffic directly through the Private Link tunnel to the ILB without consulting the routing table, skipping the routing step entirely.
 
-For serverless notebooks, `bolt://` is the recommended URI. It is explicit, skips the routing table entirely, and does not rely on driver fallback behavior. `neo4j://` works but provides no additional benefit from serverless: individual node addresses are not directly reachable, so there is no true client-side topology awareness or read/write routing differentiation.
-
-VNet-injected job clusters are different. The peering makes the full `10.0.0.0/8` range routable from the Databricks container subnet, so a job cluster receives the routing table, connects directly to each VMSS node's private IP, and gets genuine cluster-aware driver behavior — reads to followers, writes to the leader, and client-side failover. Classic compute uses `neo4j://` pointed at the ILB private frontend IP and gets true routing across the three nodes.
+VNet-injected job clusters are different. The peering makes the full `10.0.0.0/8` range routable from the Databricks container subnet, so a job cluster receives the routing table, connects directly to each VMSS node's private IP, and gets genuine cluster-aware driver behavior: reads to followers, writes to the leader, and client-side failover. Classic compute uses `neo4j://` pointed at the ILB private frontend IP and gets true routing across the three nodes.
 
 ---
 
@@ -232,7 +230,7 @@ The full round-trip stays on the Microsoft network backbone. The NSG at the Neo4
 
 **Internal Load Balancer (ILB).** An Azure Standard Load Balancer configured with a private frontend IP allocated from a VNet subnet rather than a public IP. An ILB is not reachable from the internet; it accepts connections only from within the same VNet or from a network that has an explicitly established private path to it, such as a VNet peering or a Private Link Service. This is the correct choice for Neo4j cluster access because the database should never be exposed directly to the internet. An external (internet-facing) load balancer would carry a public IP and bypass the NSG boundary that restricts access to the Databricks address space. Azure requires the Standard SKU for ILBs that host a Private Link Service; the Basic SKU does not support it.
 
-**Bolt Protocol.** The binary wire protocol used by Neo4j drivers to communicate with Neo4j instances. Bolt runs over TCP on port 7687 by default. The `bolt://` URI scheme establishes a direct connection to a single Neo4j instance; the `neo4j://` URI scheme requests a routing table from the server and distributes reads and writes across cluster members. For a VNet-injected job cluster with access to the full Neo4j VNet, use `neo4j://` pointed at the ILB's private frontend IP; the driver receives a routing table listing all three cluster member IPs and distributes reads and writes directly to those nodes. For serverless compute connecting through the Private Link path, both `bolt://neo4j.private:7687` and `neo4j://neo4j.private:7687` work when `server.default_advertised_address` is set to the ILB frontend IP in the Neo4j configuration, because the routing table entries resolve to the ILB address which is reachable through the Private Link tunnel.
+**Bolt Protocol.** The binary wire protocol used by Neo4j drivers to communicate with Neo4j instances. Bolt runs over TCP on port 7687 by default. The `bolt://` URI scheme establishes a direct connection to a single Neo4j instance; the `neo4j://` URI scheme requests a routing table from the server and distributes reads and writes across cluster members. For a VNet-injected job cluster with access to the full Neo4j VNet, use `neo4j://` pointed at the ILB's private frontend IP; the driver receives a routing table listing all three cluster member IPs and distributes reads and writes directly to those nodes. For serverless compute connecting through the Private Link path, use `neo4j://neo4j.private:7687` for full cluster topology awareness; `bolt://neo4j.private:7687` also works as a direct fallback that skips the routing table entirely.
 
 ---
 
@@ -242,7 +240,7 @@ This architecture is implemented twice in the repository, once in Bicep and once
 
 Both CLIs read configuration from `.arm-testing/config/settings.yaml` and support the same scenarios (`standalone-v2025`, `cluster-v2025`, `peer-databricks-v2025`).
 
-### Bicep — `infra/`
+### Bicep: `infra/`
 
 | File | Role |
 |------|------|
@@ -255,7 +253,7 @@ Both CLIs read configuration from `.arm-testing/config/settings.yaml` and suppor
 
 Driven by `uv run bicep-deploy deploy --scenario peer-databricks-v2025`.
 
-### Ansible — `playbooks/`
+### Ansible: `playbooks/`
 
 | File | Role |
 |------|------|

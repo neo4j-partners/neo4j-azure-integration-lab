@@ -1,6 +1,6 @@
 # Neo4j Connectivity Testing
 
-`neo4j-connect` is a CLI for verifying that a deployed Neo4j cluster is reachable — from within the Neo4j VNet and, when Databricks is peered, from inside the Databricks container subnet.
+`neo4j-connect` is a CLI for verifying that a deployed Neo4j cluster is reachable from within the Neo4j VNet and, when Databricks is peered, from inside the Databricks container subnet.
 
 It reads `.deployments/{scenario}-{engine}.json`. The `--engine` flag is required on every command: pass `bicep` or `ansible` to match the CLI that deployed the infrastructure.
 
@@ -49,7 +49,7 @@ Runs from the local machine via the Azure CLI and `az vmss run-command invoke`. 
 | LB TCP 7687 | TCP connection to `LB_IP:7687` succeeds |
 | Bolt end-to-end | `cypher-shell RETURN 1` through the LB succeeds |
 
-Checks 7–10 run from **inside the Neo4j VNet** via `az vmss run-command invoke`. For LB checks, all instances are tried in turn — any single success counts as pass. This avoids false failures from the Azure Standard ILB hairpin limitation (a VM cannot reliably reach its own LB frontend).
+Checks 7–10 run from **inside the Neo4j VNet** via `az vmss run-command invoke`. For LB checks, all instances are tried in turn; any single success counts as pass. This avoids false failures from the Azure Standard ILB hairpin limitation (a VM cannot reliably reach its own LB frontend).
 
 Peering checks are skipped automatically when the deployment has no Databricks resource group.
 
@@ -86,7 +86,7 @@ Runs from Databricks serverless compute, which has no access to the customer VNe
 | Bolt driver (from Databricks serverless) | Neo4j driver authenticates over the Private Link path |
 | Cluster topology (from Databricks serverless) | `SHOW SERVERS` returns at least one enabled node |
 
-Both probe scripts ([`notebooks/neo4j_classic_probe.py`](../notebooks/neo4j_classic_probe.py) and [`notebooks/neo4j_serverless_probe.py`](../notebooks/neo4j_serverless_probe.py)) are uploaded automatically before each run, so they always reflect the current version on disk. `setup-databricks` is still required to create the secrets scope and upload the interactive connectivity notebooks — [`notebooks/neo4j_connectivity_test.ipynb`](../notebooks/neo4j_connectivity_test.ipynb) for classic compute and [`notebooks/neo4j_serverless_connectivity_test.ipynb`](../notebooks/neo4j_serverless_connectivity_test.ipynb) for serverless — to the workspace. `setup-ncc` is still required to provision the NCC and Private Link route.
+Both probe scripts ([`notebooks/neo4j_classic_probe.py`](../notebooks/neo4j_classic_probe.py) and [`notebooks/neo4j_serverless_probe.py`](../notebooks/neo4j_serverless_probe.py)) are uploaded automatically before each run, so they always reflect the current version on disk. `setup-databricks` is still required to create the secrets scope and upload the interactive connectivity notebooks ([`notebooks/neo4j_connectivity_test.ipynb`](../notebooks/neo4j_connectivity_test.ipynb) for classic compute and [`notebooks/neo4j_serverless_connectivity_test.ipynb`](../notebooks/neo4j_serverless_connectivity_test.ipynb) for serverless) to the workspace. `setup-ncc` is still required to provision the NCC and Private Link route.
 
 #### Auto-detection
 
@@ -130,7 +130,7 @@ uv run neo4j-connect status
 
 ## Selecting an engine
 
-`--engine` is required on every command. Pass `bicep` or `ansible` to match the CLI that deployed the infrastructure — the deployment file read is `.deployments/{scenario}-{engine}.json`.
+`--engine` is required on every command. Pass `bicep` or `ansible` to match the CLI that deployed the infrastructure; the deployment file read is `.deployments/{scenario}-{engine}.json`.
 
 ```bash
 uv run neo4j-connect check --scenario peer-databricks-v2025 --engine bicep
@@ -141,7 +141,7 @@ uv run neo4j-connect check --scenario peer-databricks-v2025 --engine ansible
 
 ## Writing results to a markdown file
 
-Pass `--update-doc` to insert a results table into a markdown file. On re-runs the previous section is replaced in place — results don't accumulate.
+Pass `--update-doc` to insert a results table into a markdown file. On re-runs the previous section is replaced in place, so results don't accumulate.
 
 ```bash
 uv run neo4j-connect check --scenario peer-databricks-v2025 \
@@ -171,7 +171,7 @@ uv run pytest
 
 ### What is covered
 
-**`tests/test_deployment_output.py`** — Tests the shared JSON schema used by both the Bicep and Ansible engines.
+**`tests/test_deployment_output.py`**: Tests the shared JSON schema used by both the Bicep and Ansible engines.
 
 | Area | What is verified |
 |---|---|
@@ -181,7 +181,7 @@ uv run pytest
 | Null field serialisation | Optional fields serialise to `null` rather than being omitted, so the schema stays consistent across engines |
 | `display_connection_info` | Renderer handles all deployment states without raising: standalone, cluster, partial, Databricks peering, serverless Bolt URI |
 
-**`tests/test_password.py`** — Tests password generation, environment variable reading, and prompt validation.
+**`tests/test_password.py`**: Tests password generation, environment variable reading, and prompt validation.
 
 | Area | What is verified |
 |---|---|

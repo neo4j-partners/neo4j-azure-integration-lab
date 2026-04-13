@@ -1,23 +1,25 @@
 # Neo4j Enterprise Edition - Azure Deployment Template
 
-Deployment tooling for Neo4j Enterprise Edition on Azure VM Scale Sets. Two deployment paths are available: a Bicep path using Azure Bicep templates backed by a `bicep-deploy` Python CLI, and an Ansible path using Ansible playbooks backed by an `ansible-deploy` CLI. Both paths support standalone (1 node) and cluster (3–10 nodes) topologies and share the same command interface — setup, deploy, test, status, and cleanup — covering the full deployment lifecycle.
+Deployment tooling for Neo4j Enterprise Edition on Azure VM Scale Sets. Two deployment paths are available: a Bicep path using Azure Bicep templates backed by a `bicep-deploy` Python CLI, and an Ansible path using Ansible playbooks backed by an `ansible-deploy` CLI. Both paths support standalone (1 node) and cluster (3–10 nodes) topologies and share the same command interface: setup, deploy, test, status, and cleanup, covering the full deployment lifecycle.
 
 Three optional integration layers extend the base deployment:
 
-- **Private Databricks connectivity**: deploys an Azure Databricks workspace with VNet injection, connects it to the Neo4j cluster via Azure VNet peering (job clusters) and Azure Private Link (serverless notebooks), and scopes NSG rules so Bolt traffic travels only on the private network
+- **Private Databricks connectivity**: deploys an Azure Databricks workspace with VNet injection and connects it to the Neo4j cluster over two private network layers: Azure VNet peering for VNet-injected job clusters, and Azure Private Link + a Databricks Network Connectivity Configuration (NCC) for serverless compute. NSG rules are scoped so Bolt traffic never traverses the public internet on either path
 - **M2M bearer token authentication**: configures Neo4j's OIDC provider using either Keycloak (deployed to Azure Container Apps) or Microsoft Entra ID, enabling service-to-service connections without static credentials
 - **Databricks connectivity validation**: provisions a Databricks secrets scope and uploads a test notebook that validates TCP connectivity, Bolt authentication, and cluster topology in sequence
 
-> **Disclaimer:** This is a sample template provided as-is and is not officially supported. It requires full security hardening and review before use in any production environment.
+> **Production hardening required:** The default configuration is tuned for evaluation and testing. Before deploying to production, review the hardening guidance for your deployment path: [Bicep: Production Security Hardening](docs/bicep.md#production-security-hardening) or [Ansible: Production Security Hardening](docs/ansible.md#production-security-hardening).
+
+> **Disclaimer:** This is a sample template provided as-is and is not officially supported by Neo4j.
 
 ## Features
 
-- **Two deployment paths**: Bicep path (`bicep-deploy`) using Azure Bicep templates; Ansible path (`ansible-deploy`) using Ansible playbooks — both share the same CLI interface
+- **Two deployment paths**: Bicep path (`bicep-deploy`) using Azure Bicep templates; Ansible path (`ansible-deploy`) using Ansible playbooks; both share the same CLI interface
 - **Standalone or Cluster**: Deploy 1 node (standalone) or 3-10 nodes (cluster)
 - **Neo4j 2025.x**: Latest Neo4j Enterprise (2025.12+) with APOC plugin
 - **Load Balancer**: Automatic internal load balancer for clusters (3+ nodes)
 - **Cloud-init**: VM provisioning via cloud-init (no custom script extensions)
-- **Private Databricks connectivity**: Databricks workspace with VNet injection, connected to Neo4j via Azure VNet peering with NSG rules scoped to the Databricks container subnet
+- **Private Databricks connectivity**: Databricks workspace with VNet injection; VNet peering for classic job-cluster connectivity and Azure Private Link + NCC for serverless compute connectivity; NSG rules scoped to the Databricks CIDR on all Neo4j ports
 - **Security**: NSG with proper port configuration, SSRF protection
 - **M2M Bearer Token Authentication**: OAuth 2.0 machine-to-machine authentication via Keycloak or Microsoft Entra ID
 
@@ -27,6 +29,20 @@ Three optional integration layers extend the base deployment:
 - Bicep CLI (included with Azure CLI 2.20+)
 - [uv](https://docs.astral.sh/uv/) package manager
 - Python 3.12+
+
+## Databricks connectivity: two deployment layers
+
+The `peer-databricks-v2025` scenario deploys Databricks connectivity in two distinct layers:
+
+**Layer 1: VNet peering (classic compute, required)**
+Deployed as part of `bicep-deploy deploy --scenario peer-databricks-v2025` or `ansible-deploy deploy --scenario peer-databricks-v2025`. Establishes bidirectional VNet peering between the Databricks workspace VNet and the Neo4j VNet, and restricts Neo4j NSG rules to the Databricks CIDR. VNet-injected job clusters reach Neo4j directly over the peering.
+
+**Layer 2: Private Link + NCC (serverless compute, optional)**
+Deployed via `setup-ncc`. Creates an Azure Private Link Service on the Neo4j load balancer and a Databricks Network Connectivity Configuration that routes serverless compute traffic through it. Required only for serverless workloads.
+
+Serverless compute covers more of the Databricks platform than the name suggests. SQL warehouses (the default compute for Databricks SQL and interactive queries), serverless jobs, Lakeflow Spark Declarative Pipelines, and Mosaic AI model serving endpoints all run on serverless infrastructure. An AI agent that queries Neo4j from a Databricks serving endpoint runs on serverless, not on a VNet-injected job cluster. Without Layer 2, none of those workloads can reach Neo4j over a private path.
+
+See [databricks-docs/p2p-architecture.md](databricks-docs/p2p-architecture.md) for full architecture details.
 
 ---
 
@@ -38,15 +54,6 @@ See [docs/bicep.md](docs/bicep.md) for full details.
 
 > **Production use:** Review the [Production Security Hardening](docs/bicep.md#production-security-hardening) section before deploying to a production environment.
 
-### Testing Databricks Connectivity
-
-After deploying the `peer-databricks-v2025` scenario:
-
-- Run `setup-databricks` to provision secrets and upload the connectivity test notebook (VNet-injected job cluster path).
-- Run `setup-ncc` to configure the Databricks NCC and Azure Private Link endpoint (serverless notebook path).
-
-See [docs/databricks-validate.md](docs/databricks-validate.md) for the full walkthrough of both paths.
-
 ---
 
 ## Ansible Deployment
@@ -57,19 +64,13 @@ See [docs/ansible.md](docs/ansible.md) for full details.
 
 > **Production use:** Review the [Production Security Hardening](docs/ansible.md#production-security-hardening) section before deploying to a production environment.
 
-### Testing Databricks Connectivity
-
-After deploying the `peer-databricks-v2025` scenario, run `setup-databricks` to provision secrets and upload the connectivity test notebook.
-
-See [docs/databricks-validate.md](docs/databricks-validate.md) for the full walkthrough.
-
 ---
 
 ## Databricks Deployment
 
 The `peer-databricks-v2025` scenario extends the base cluster deployment to include an Azure Databricks workspace with VNet injection and private connectivity to Neo4j. Both the Bicep and Ansible CLIs support this scenario.
 
-The deployment provisions two resource groups: one for the 3-node Neo4j cluster (VNet, NSG, internal load balancer, VMSS) and one for Databricks (NAT gateway, delegated VNet, workspace). After both are provisioned, VNet peering is established in both directions and the Neo4j NSG rules are replaced with Databricks-scoped rules — the only inbound path to Neo4j ports is from the Databricks container subnet.
+The deployment provisions two resource groups: one for the 3-node Neo4j cluster (VNet, NSG, internal load balancer, VMSS) and one for Databricks (NAT gateway, delegated VNet, workspace). After both are provisioned, VNet peering is established in both directions and the Neo4j NSG rules are replaced with Databricks-scoped rules; the only inbound path to Neo4j ports is from the Databricks container subnet.
 
 See [databricks-docs/p2p-architecture.md](databricks-docs/p2p-architecture.md) for architecture details and [databricks-docs/p2p-access-guide.md](databricks-docs/p2p-access-guide.md) for the deployment walkthrough.
 
@@ -90,7 +91,6 @@ azure-ee-template/
 ├── docs/                       # Deployment and feature guides
 │   ├── bicep.md                # Bicep CLI reference
 │   ├── ansible.md              # Ansible playbooks reference
-│   ├── databricks-validate.md  # Databricks connectivity testing
 │   └── m2m.md                  # M2M bearer token authentication
 ├── infra/                      # Azure infrastructure (Bicep templates)
 │   ├── main.bicep              # Main orchestrator template
