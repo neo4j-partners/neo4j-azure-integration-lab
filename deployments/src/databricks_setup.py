@@ -143,8 +143,7 @@ def run_databricks_setup(
     serverless_probe_encoded = base64.b64encode(serverless_probe_local.read_bytes()).decode()
     client.workspace.import_(
         path=serverless_probe_path,
-        format=ImportFormat.SOURCE,
-        language=Language.PYTHON,
+        format=ImportFormat.AUTO,
         content=serverless_probe_encoded,
         overwrite=True,
     )

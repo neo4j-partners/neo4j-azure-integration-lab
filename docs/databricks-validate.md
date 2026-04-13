@@ -142,14 +142,13 @@ Open a **serverless** notebook in the Databricks workspace and run:
 ```python
 from neo4j import GraphDatabase
 
-# bolt:// (direct mode) is required for serverless — routing table fetch is not supported
-driver = GraphDatabase.driver("bolt://neo4j.private:7687", auth=("neo4j", "<password>"))
+driver = GraphDatabase.driver("neo4j://neo4j.private:7687", auth=("neo4j", "<password>"))
 with driver.session() as s:
     print(s.run("RETURN 1 AS n").single()["n"])
 driver.close()
 ```
 
-Use `bolt://` (not `neo4j://`) — serverless compute does not support the routing table request that `neo4j://` triggers. The hostname `neo4j.private` must match the `--domain-name` value used when `setup-ncc` was run (default: `neo4j.private`). Databricks resolves this hostname internally through the private endpoint; no external DNS is required.
+Use `neo4j://` for full cluster-aware routing across all three nodes; `bolt://neo4j.private:7687` also works as a direct fallback. The hostname `neo4j.private` must match the `--domain-name` value used when `setup-ncc` was run (default: `neo4j.private`). Databricks resolves this hostname internally through the private endpoint; no external DNS is required.
 
 ### Options
 

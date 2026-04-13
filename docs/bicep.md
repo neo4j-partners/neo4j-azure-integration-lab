@@ -40,38 +40,87 @@ uv run bicep-deploy cleanup --all --force
 
 ### 3-Node Neo4j EE with Load Balancer and Databricks
 
-This flow deploys a 3-node Neo4j cluster behind an Azure load balancer, then peers a Databricks workspace into the same VNet. The two scenarios must be deployed in order — the first saves the VNet and NSG resource IDs that the second reads.
+This flow deploys a 3-node Neo4j cluster behind an Azure internal load balancer, then peers a Databricks workspace into the same VNet. The two scenarios must be deployed in order — `cluster-v2025` saves the VNet and NSG resource IDs that `peer-databricks-v2025` reads.
 
 ```bash
 cd deployments
-
-# Install dependencies and run the setup wizard
 uv sync
 uv run bicep-deploy setup
+```
 
-# 1. Deploy 3-node Neo4j cluster with load balancer
+#### Step 1: Deploy the Neo4j cluster
+
+Provisions a 3-node Neo4j cluster on a VMSS with an internal Azure Standard load balancer. The load balancer is deployed automatically when `nodeCount >= 3`. Browser and Bolt access from a local machine requires an SSH tunnel — the ILB has no public IP.
+
+```bash
 uv run bicep-deploy deploy --scenario cluster-v2025
+```
 
-# 2. Deploy Databricks workspace with VNet peering
+#### Step 2: Deploy the Databricks workspace
+
+Provisions a Databricks workspace with VNet injection and Secure Cluster Connectivity, establishes bidirectional VNet peering between the Databricks VNet and the Neo4j VNet, and updates the Neo4j NSG to restrict database ports to the Databricks CIDR.
+
+```bash
 uv run bicep-deploy deploy --scenario peer-databricks-v2025
+```
 
-# Create Databricks secrets scope and upload connectivity test notebook
+#### Step 3: Set up Databricks secrets and notebooks
+
+Creates a Databricks secrets scope pre-loaded with Neo4j connection credentials and uploads connectivity test notebooks for both classic and serverless compute. Required before running notebooks.
+
+```bash
 uv run bicep-deploy setup-databricks --scenario peer-databricks-v2025
+```
 
-# Create NCC + Private Link Service endpoint for serverless compute connectivity
-uv run bicep-deploy setup-ncc --scenario peer-databricks-v2025
+#### Step 4: Set up NCC for serverless compute (optional)
 
-# Run automated connectivity checks (VNet-internal + cross-VNet from Databricks)
-# Covers: peering, NSG, VMSS, LB Bolt/HTTP, topology, DNS resolution, TCP 7474/7687, Bolt driver
-# Classic and serverless jobs run concurrently when both are configured (~8–10 min total)
+Creates a Databricks Network Connectivity Configuration, attaches it to the workspace, and creates a private endpoint rule pointing at the Neo4j Private Link Service. Required only for serverless compute; classic compute uses the VNet peering path and does not need this step.
+
+```bash
+uv run bicep-deploy setup-ncc --scenario peer-databricks-v2025 --account-profile <databricks-account-admin-profile>
+```
+
+#### Step 5: Run connectivity checks
+
+Validates end-to-end connectivity. Without `--compute`, the command auto-detects which compute paths are available from the deployment profile.
+
+```bash
+# All available checks (auto-detected)
 uv run neo4j-connect check --scenario peer-databricks-v2025
-# See docs/testing.md for the full reference
 
-# Clean up all resources when done
+# Classic compute only (VNet peering path — does not require setup-ncc)
+uv run neo4j-connect check --scenario peer-databricks-v2025 --compute classic
+```
+
+See [testing.md](testing.md) for the full `neo4j-connect` reference.
+
+#### Cleanup
+
+```bash
 uv run bicep-deploy cleanup --all --force
 ```
 
-> **Note:** `cluster-v2025` deploys the load balancer automatically when `nodeCount >= 3`. The load balancer is internal — browser access requires an SSH tunnel.
+## Databricks Integration
+
+### Deployment overview
+
+The integration requires two scenarios deployed in sequence. `cluster-v2025` deploys Neo4j and saves the VNet and NSG resource IDs; `peer-databricks-v2025` reads those IDs to deploy the Databricks workspace, VNet, NAT gateway, and bidirectional peering connections. After peering, the Neo4j NSG is updated to restrict database ports to the Databricks VNet CIDR.
+
+```bash
+cd deployments
+uv run bicep-deploy deploy --scenario cluster-v2025
+uv run bicep-deploy deploy --scenario peer-databricks-v2025
+```
+
+### Classic compute connectivity
+
+Classic compute uses VNet-injected job clusters that have a direct route to the Neo4j VNet via the peering. The driver connects to the internal load balancer private IP and uses `neo4j://` to fetch a routing table, which distributes reads and writes across all three cluster nodes. See [`notebooks/neo4j_connectivity_test.ipynb`](../notebooks/neo4j_connectivity_test.ipynb) — uploaded by `setup-databricks` to `/Shared/neo4j-peer-databricks-v2025-connectivity-test` in the workspace — for a working example.
+
+### Serverless compute connectivity
+
+Serverless compute runs on Databricks-managed infrastructure outside the customer subscription and has no route through the VNet peering. Connectivity goes through a Private Link Service on the Neo4j ILB wired to a Databricks Network Connectivity Configuration — the driver reaches Neo4j via the PLS hostname `neo4j.private`. Use `bolt://neo4j.private:7687` for direct connectivity through the Private Link tunnel to the ILB. `neo4j://neo4j.private:7687` also works — the driver falls back to the bootstrap router (the ILB via the Private Link tunnel) when routing table addresses are unreachable from serverless compute — but provides no routing advantage over `bolt://` since all traffic goes through the ILB either way. See [`notebooks/neo4j_serverless_connectivity_test.ipynb`](../notebooks/neo4j_serverless_connectivity_test.ipynb) — uploaded by `setup-databricks` to `/Shared/neo4j-peer-databricks-v2025-serverless-connectivity-test` in the workspace — for a working example.
+
+See [databricks-validate.md](databricks-validate.md) for the interactive notebook workflow. See [testing.md](testing.md) for the full `neo4j-connect` check reference.
 
 ## Commands
 
@@ -213,18 +262,6 @@ After deployment, you'll receive:
 - `Neo4jBrowserURL`: URL to access Neo4j Browser (single-node public IP; cluster deployments use an internal load balancer and require an SSH tunnel for browser access)
 - `Username`: Default username (`neo4j`)
 
-## Databricks Integration
-
-The integration requires two scenarios deployed in sequence: `cluster-v2025` deploys Neo4j and saves the VNet and NSG resource IDs, and `peer-databricks-v2025` reads those IDs to deploy the Databricks workspace, VNet, NAT gateway, and peering connections.
-
-```bash
-cd deployments
-uv run bicep-deploy deploy --scenario cluster-v2025
-uv run bicep-deploy deploy --scenario peer-databricks-v2025
-```
-
-See [databricks-validate.md](databricks-validate.md) for the interactive notebook workflow and `setup-ncc` reference. See [testing.md](testing.md) for the full `neo4j-connect` check reference including the classic topology check, serverless DNS resolution, TCP 7474 verification, and parallel job execution.
-
 ## Load balancer and NSG design notes
 
 These notes capture non-obvious behaviors that were confirmed during live deployments. They are relevant whenever the load balancer or NSG configuration is modified.
@@ -241,9 +278,9 @@ Every LB rule has `enableTcpReset: true`. When a probe fails and the LB marks al
 
 The Standard ILB health probe traffic originates from the `AzureLoadBalancer` service tag. If the NSG does not have an Allow rule for this source, probes never reach the VMSS instances. The LB then marks all backends unhealthy and RSTs every inbound connection. This rule must survive any full NSG replacement during Databricks peering — verify that the updated NSG still contains an Allow rule for `AzureLoadBalancer` before testing connectivity.
 
-**Databricks Serverless compute cannot reach the private LB IP**
+**Databricks Serverless compute requires Private Link Service and NCC**
 
-The Neo4j internal load balancer has a private frontend IP (`10.0.0.4` in the default address space). Databricks Serverless compute runs on Databricks-managed infrastructure outside the customer subscription — it is not VNet-injected and has no route to private RFC-1918 addresses. Connecting from a Serverless notebook to the LB private IP returns `errno 111` regardless of NSG or peering configuration. The connectivity notebook must run on a **VNet-injected all-purpose cluster**: in the workspace, create a new cluster using Standard (not Serverless) compute. The workspace VNet injection settings propagate automatically, giving the cluster a route to the Neo4j VNet via the VNet peering.
+Databricks Serverless compute runs on Databricks-managed infrastructure outside the customer subscription — it is not VNet-injected and has no route to private RFC-1918 addresses. The VNet peering used by classic compute does not carry traffic for serverless workloads. To reach the Neo4j ILB from Serverless compute, the deployment includes a `pls-subnet` and a Private Link Service (`pls-neo4j`) attached to the ILB frontend. Run `setup-ncc` to create a Databricks Network Connectivity Configuration, attach it to the workspace, and create a private endpoint rule pointing at the PLS. Once attached, Databricks Serverless resolves `neo4j.private` to the private endpoint IP and opens a TCP path through the PLS into the ILB. Use `bolt://neo4j.private:7687` from serverless notebooks; `neo4j://neo4j.private:7687` also works via driver fallback through the ILB.
 
 ## Production Security Hardening
 

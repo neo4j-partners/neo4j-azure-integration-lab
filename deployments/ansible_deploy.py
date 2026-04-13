@@ -1004,7 +1004,7 @@ def setup_ncc_cmd(
         _data["serverless"] = {
             "ncc_configured": True,
             "domain_name": domain_name,
-            "bolt_uri": f"bolt://{domain_name}:{NEO4J_BOLT_PORT}",
+            "bolt_uri": f"neo4j://{domain_name}:{NEO4J_BOLT_PORT}",
             "pls_name": pls_name,
         }
         with open(details_file, "w") as _f:
@@ -1012,7 +1012,7 @@ def setup_ncc_cmd(
     except Exception as _e:
         console.print(f"[yellow]Warning: could not update deployment JSON: {_e}[/yellow]")
 
-    bolt_uri = f"bolt://{domain_name}:{NEO4J_BOLT_PORT}"
+    bolt_uri = f"neo4j://{domain_name}:{NEO4J_BOLT_PORT}"
     table = Table(show_header=False, box=None, padding=(0, 2))
     table.add_column("Label", style="cyan")
     table.add_column("Value", style="white")

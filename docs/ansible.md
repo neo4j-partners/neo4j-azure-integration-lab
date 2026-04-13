@@ -81,9 +81,12 @@ uv run ansible-deploy setup-ncc --scenario peer-databricks-v2025 --account-profi
 ```bash
 # Run all checks — Databricks classic and serverless auto-detected from deployment profile
 uv run neo4j-connect check --scenario peer-databricks-v2025 --engine ansible
+
+# Classic compute only (VNet peering path — does not require setup-ncc)
+uv run neo4j-connect check --scenario peer-databricks-v2025 --engine ansible --compute classic
 ```
 
-See [testing.md](testing.md) for the full reference. See the [Neo4j + Databricks](#neo4j--databricks-private-connectivity) section below for full details on both commands, the `bolt://neo4j.private:7687` URI, and per-compute-mode check commands.
+See [testing.md](testing.md) for the full reference. See the [Neo4j + Databricks](#neo4j--databricks-private-connectivity) section below for connection patterns and URIs.
 
 ---
 
@@ -177,49 +180,11 @@ Partial state is written after step 1 so `cleanup` can find both resource groups
 
 ### Classic compute connectivity
 
-Classic compute uses VNet-injected job clusters that have a direct route to the Neo4j VNet via the peering. Run `setup-databricks` first to create the secrets scope and upload the connectivity notebooks — it uses an AAD token from the active `az login` session, no PAT required:
-
-```bash
-cd deployments
-uv run ansible-deploy setup-databricks --scenario peer-databricks-v2025
-```
-
-Connect using the LB private IP printed in the `status` output. Use `neo4j://` so the driver fetches a routing table through the LB and discovers all three cluster nodes:
-
-```python
-from neo4j import GraphDatabase
-driver = GraphDatabase.driver("neo4j://<lb-private-ip>:7687", auth=("neo4j", "<password>"))
-driver.verify_connectivity()
-```
-
-Verify with the automated check:
-
-```bash
-cd deployments
-uv run neo4j-connect check --scenario peer-databricks-v2025 --engine ansible --compute classic
-```
-
-See [databricks-validate.md](databricks-validate.md) for the manual notebook workflow.
+Classic compute uses VNet-injected job clusters that have a direct route to the Neo4j VNet via the peering. The driver connects to the internal load balancer private IP and uses `neo4j://` to fetch a routing table, which distributes reads and writes across all three cluster nodes. See [`notebooks/neo4j_connectivity_test.ipynb`](../notebooks/neo4j_connectivity_test.ipynb) — uploaded by `setup-databricks` to `/Shared/neo4j-ansible-peer-databricks-v2025-connectivity-test` in the workspace — for a working example.
 
 ### Serverless compute connectivity
 
-Serverless compute runs on Databricks-managed infrastructure outside the customer subscription and has no route through the VNet peering. Connectivity requires a Private Link Service on the Neo4j ILB (provisioned by the deployment) wired to a Databricks Network Connectivity Configuration. Run `setup-ncc` to create the NCC, attach it to the workspace, create a private endpoint rule pointing at the PLS, and approve the resulting connection:
-
-```bash
-cd deployments
-uv run ansible-deploy setup-ncc --scenario peer-databricks-v2025 --account-profile <databricks-account-admin-profile>
-```
-
-From serverless notebooks, use `bolt://neo4j.private:7687`. Do not use `neo4j://` — the routing protocol returns VMSS node IPs that are not reachable from serverless infrastructure (see implementation notes).
-
-Verify with the automated check:
-
-```bash
-cd deployments
-uv run neo4j-connect check --scenario peer-databricks-v2025 --engine ansible --compute serverless
-```
-
-See [testing.md](testing.md) for the full connectivity check reference.
+Serverless compute runs on Databricks-managed infrastructure outside the customer subscription and has no route through the VNet peering. Connectivity goes through a Private Link Service on the Neo4j ILB wired to a Databricks Network Connectivity Configuration — the driver reaches Neo4j via the PLS hostname `neo4j.private`. Use `neo4j://neo4j.private:7687` for full cluster-aware routing across all three nodes; `bolt://neo4j.private:7687` also works as a direct fallback. See [`notebooks/neo4j_serverless_connectivity_test.ipynb`](../notebooks/neo4j_serverless_connectivity_test.ipynb) — uploaded by `setup-databricks` to `/Shared/neo4j-ansible-peer-databricks-v2025-serverless-connectivity-test` in the workspace — for a working example.
 
 ---
 
@@ -279,7 +244,7 @@ Databricks Serverless compute runs on Databricks-managed infrastructure outside 
 2. A Private Link Service (`pls-neo4j`) attached to the ILB frontend IP, using `pls-subnet` for NAT IP allocation (created by `tasks/loadbalancer.yml`)
 3. A Databricks Network Connectivity Configuration (NCC) attached to the workspace, with a Private Endpoint rule pointing at the PLS (provisioned by `ansible-deploy setup-ncc`)
 
-Once the NCC is attached, Databricks Serverless compute resolves `neo4j.private` to the private endpoint IP and opens a TCP path through the PLS into the ILB. Classic compute connectivity via VNet peering is unaffected. Use `bolt://neo4j.private:7687` (not `neo4j://`) for Serverless connections — `neo4j://` triggers a routing table request that returns the VMSS node IPs, which are not reachable from Serverless infrastructure.
+Once the NCC is attached, Databricks Serverless compute resolves `neo4j.private` to the private endpoint IP and opens a TCP path through the PLS into the ILB. Classic compute connectivity via VNet peering is unaffected. Use `neo4j://neo4j.private:7687` from Serverless notebooks for full cluster-aware routing; `bolt://neo4j.private:7687` also works as a direct fallback.
 
 The automated `neo4j-connect check --compute classic` command uses a fresh VNet-injected job cluster. `neo4j-connect check --compute serverless` uses Serverless compute and requires `setup-ncc` to have been run first.
 

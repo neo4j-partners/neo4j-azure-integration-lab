@@ -61,7 +61,7 @@ def main() -> None:
 
     from databricks.sdk import WorkspaceClient
     from databricks.sdk.service import compute, jobs
-    from databricks.sdk.service.workspace import ImportFormat, Language
+    from databricks.sdk.service.workspace import ImportFormat
 
     client = WorkspaceClient(host=workspace_host, token=token)
 
@@ -80,8 +80,7 @@ def main() -> None:
     encoded = base64.b64encode(PROBE_SCRIPT.read_bytes()).decode()
     client.workspace.import_(
         path=WORKSPACE_PROBE_PATH,
-        format=ImportFormat.SOURCE,
-        language=Language.PYTHON,
+        format=ImportFormat.AUTO,
         content=encoded,
         overwrite=True,
     )

@@ -121,11 +121,9 @@ The PLS requires a dedicated subnet where `privateLinkServiceNetworkPolicies` is
 
 A Network Connectivity Configuration is an account-level Azure Databricks resource that defines the network policy for serverless compute in a given region. When a Private Endpoint Rule is added to an NCC targeting the PLS ARM resource ID, Databricks provisions a private endpoint from its managed infrastructure to the PLS. The connection appears on the PLS in Pending state and stays there until a customer identity with write access on the Neo4j resource group approves it. No traffic flows through the Private Link path until that approval is given. After approval, the NCC rule transitions to ESTABLISHED and serverless compute can use the path.
 
-### The bolt:// Constraint for Serverless
+### Driver Protocol for Serverless
 
-Serverless connections through the Private Link path use `bolt://` rather than `neo4j://`. Routing mode sends an initial ROUTE request and the cluster responds with a routing table listing the private IPs of all three VMSS nodes. From serverless infrastructure, only the ILB frontend IP is reachable through the Private Link tunnel. The VMSS node IPs are not routable from that network, so the direct connections the driver opens to distribute reads and writes all fail.
-
-`bolt://` targeted at the ILB frontend IP bypasses the routing table entirely. The driver sends all queries over a single connection to the ILB, which distributes them across the backend pool. The tradeoff is that the driver has no cluster topology awareness: it sends writes to whichever node the ILB selects, does not route reads to followers, and does not perform client-side failover.
+Serverless connections through the Private Link path support both `neo4j://` and `bolt://` — use `neo4j://neo4j.private:7687` to get full cluster-aware routing across all three nodes. The driver sends an initial ROUTE request, receives a routing table from Neo4j, and distributes reads and writes across the cluster. `bolt://neo4j.private:7687` also works as a direct fallback: it bypasses the routing table and sends all queries over a single connection to the ILB, which load-balances across the backend pool.
 
 VNet-injected job clusters use `neo4j://` and get full cluster-aware driver behavior. The peering makes the entire Neo4j VNet routable from the container subnet, so a job cluster fetches the routing table, receives the individual VMSS node IPs, and opens direct connections to each.
 

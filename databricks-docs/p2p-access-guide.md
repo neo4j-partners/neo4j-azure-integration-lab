@@ -92,11 +92,15 @@ cd deployments
 uv run $CLI setup-ncc --scenario peer-databricks-v2025 --account-profile <databricks-account-admin-profile>
 ```
 
-`--account-profile` names a `~/.databrickscfg` profile that has Databricks account admin credentials — required to call the account-level NCC API. This command creates an engine-namespaced NCC, attaches it to the workspace, creates a private endpoint rule pointing at the `pls-neo4j` Private Link Service, and approves the resulting endpoint connection — all from the current `az login` session. When it completes it prints the bolt URI to use from serverless notebooks:
+`--account-profile` names a `~/.databrickscfg` profile that has Databricks account admin credentials — required to call the account-level NCC API. This command creates an engine-namespaced NCC, attaches it to the workspace, creates a private endpoint rule pointing at the `pls-neo4j` Private Link Service, and approves the resulting endpoint connection — all from the current `az login` session. When it completes it prints the URI to use from serverless notebooks:
 
 ```
-bolt://neo4j.private:7687
+neo4j://neo4j.private:7687
 ```
+
+**About `neo4j.private`:** This hostname is the default value of the `--domain-name` parameter on `setup-ncc`. It is passed to the Databricks NCC Private Endpoint rule as the `domain_names` value when the rule is created. Databricks automatically creates internal DNS routing so that `neo4j.private` resolves to the private endpoint IP inside serverless compute containers — no Azure Private DNS Zone, no Route 53, and no external DNS infrastructure is required. The hostname is arbitrary and fixed for the life of the PE rule; to use a different name, pass `--domain-name <your-hostname>` to `setup-ncc` before the NCC is created.
+
+Both `neo4j://` and `bolt://` work for this URI. `bolt://` sends all traffic directly through the Private Link tunnel to the ILB and is the recommended choice for serverless. `neo4j://` also works: the driver issues a ROUTE request, receives a routing table containing each node's public cloudapp.azure.com FQDN (not directly reachable from serverless), and falls back to the bootstrap router (the ILB via the PE tunnel) when those addresses are unavailable — so queries still succeed, but all traffic goes through the ILB either way. `SHOW SERVERS` returns all three cluster members because that reflects Neo4j's internal cluster state, not individual node reachability from the client.
 
 See [docs/databricks-validate.md](../docs/databricks-validate.md#serverless-compute-connectivity-private-link) for the notebook snippet.
 

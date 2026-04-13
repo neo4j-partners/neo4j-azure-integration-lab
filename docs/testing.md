@@ -1,8 +1,8 @@
 # Neo4j Connectivity Testing
 
-`neo4j-connect` is an engine-agnostic CLI for verifying that a deployed Neo4j cluster is reachable — from within the Neo4j VNet and, when Databricks is peered, from inside the Databricks container subnet.
+`neo4j-connect` is a CLI for verifying that a deployed Neo4j cluster is reachable — from within the Neo4j VNet and, when Databricks is peered, from inside the Databricks container subnet.
 
-It reads `.deployments/{scenario}-bicep.json` or `.deployments/{scenario}-ansible.json`, so it works the same way regardless of which CLI deployed the infrastructure.
+It reads `.deployments/{scenario}-{engine}.json`. The `--engine` flag is required on every command: pass `bicep` or `ansible` to match the CLI that deployed the infrastructure.
 
 ---
 
@@ -21,7 +21,8 @@ No Databricks PAT is required. Databricks checks authenticate using an AAD token
 cd deployments
 
 # Run all checks for a scenario
-uv run neo4j-connect check --scenario peer-databricks-v2025
+uv run neo4j-connect check --scenario peer-databricks-v2025 --engine ansible
+uv run neo4j-connect check --scenario peer-databricks-v2025 --engine bicep
 
 # List all deployment profiles
 uv run neo4j-connect status
@@ -85,7 +86,7 @@ Runs from Databricks serverless compute, which has no access to the customer VNe
 | Bolt driver (from Databricks serverless) | Neo4j driver authenticates over the Private Link path |
 | Cluster topology (from Databricks serverless) | `SHOW SERVERS` returns at least one enabled node |
 
-Both probe scripts (`neo4j_classic_probe.py` and `neo4j_serverless_probe.py`) are uploaded automatically before each run, so they always reflect the current version on disk. `setup-databricks` is still required to create the secrets scope and upload the interactive connectivity notebooks; `setup-ncc` is still required to provision the NCC and Private Link route.
+Both probe scripts ([`notebooks/neo4j_classic_probe.py`](../notebooks/neo4j_classic_probe.py) and [`notebooks/neo4j_serverless_probe.py`](../notebooks/neo4j_serverless_probe.py)) are uploaded automatically before each run, so they always reflect the current version on disk. `setup-databricks` is still required to create the secrets scope and upload the interactive connectivity notebooks — [`notebooks/neo4j_connectivity_test.ipynb`](../notebooks/neo4j_connectivity_test.ipynb) for classic compute and [`notebooks/neo4j_serverless_connectivity_test.ipynb`](../notebooks/neo4j_serverless_connectivity_test.ipynb) for serverless — to the workspace. `setup-ncc` is still required to provision the NCC and Private Link route.
 
 #### Auto-detection
 
@@ -103,22 +104,23 @@ Databricks checks are skipped automatically when running `--checks all` against 
 cd deployments
 
 # Run all checks — Databricks classic and serverless auto-detected from deployment profile
-uv run neo4j-connect check --scenario peer-databricks-v2025
+uv run neo4j-connect check --scenario peer-databricks-v2025 --engine ansible
+uv run neo4j-connect check --scenario peer-databricks-v2025 --engine bicep
 
 # VNet checks only — faster, no Databricks needed
-uv run neo4j-connect check --scenario peer-databricks-v2025 --checks vnet
+uv run neo4j-connect check --scenario peer-databricks-v2025 --engine ansible --checks vnet
 
 # Databricks checks only — classic and serverless auto-detected
-uv run neo4j-connect check --scenario peer-databricks-v2025 --checks databricks
+uv run neo4j-connect check --scenario peer-databricks-v2025 --engine ansible --checks databricks
 
-# Force classic compute only (skips serverless even if NCC is configured)
-uv run neo4j-connect check --scenario peer-databricks-v2025 --compute classic
+# Classic compute only (VNet peering path — does not require setup-ncc)
+uv run neo4j-connect check --scenario peer-databricks-v2025 --engine ansible --compute classic
 
-# Force serverless only (requires setup-ncc to have been run)
-uv run neo4j-connect check --scenario peer-databricks-v2025 --compute serverless
+# Serverless only (requires setup-ncc to have been run)
+uv run neo4j-connect check --scenario peer-databricks-v2025 --engine ansible --compute serverless
 
 # Run both paths explicitly
-uv run neo4j-connect check --scenario peer-databricks-v2025 --compute both
+uv run neo4j-connect check --scenario peer-databricks-v2025 --engine ansible --compute both
 
 # List all deployment profiles across both engines
 uv run neo4j-connect status
@@ -126,9 +128,9 @@ uv run neo4j-connect status
 
 ---
 
-## Selecting a profile when both engines exist
+## Selecting an engine
 
-When both `-bicep.json` and `-ansible.json` exist for a scenario, `neo4j-connect` uses the most recently modified file. To choose explicitly:
+`--engine` is required on every command. Pass `bicep` or `ansible` to match the CLI that deployed the infrastructure — the deployment file read is `.deployments/{scenario}-{engine}.json`.
 
 ```bash
 uv run neo4j-connect check --scenario peer-databricks-v2025 --engine bicep
