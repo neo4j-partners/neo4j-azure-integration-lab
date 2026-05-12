@@ -87,7 +87,7 @@ See [docs/m2m.md](docs/m2m.md) for full details.
 ## Project Structure
 
 ```
-azure-ee-template/
+neo4j-azure-integration-lab/
 ├── docs/                       # Deployment and feature guides
 │   ├── bicep.md                # Bicep CLI reference
 │   ├── ansible.md              # Ansible playbooks reference
