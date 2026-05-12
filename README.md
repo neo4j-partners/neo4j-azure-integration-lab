@@ -1,16 +1,18 @@
-# Neo4j Enterprise Edition - Azure Deployment Template
+# Neo4j Azure Integration Lab - Not for Production
 
-Deployment tooling for Neo4j Enterprise Edition on Azure VM Scale Sets. Two deployment paths are available: a Bicep path using Azure Bicep templates backed by a `bicep-deploy` Python CLI, and an Ansible path using Ansible playbooks backed by an `ansible-deploy` CLI. Both paths support standalone (1 node) and cluster (3–10 nodes) topologies and share the same command interface: setup, deploy, test, status, and cleanup, covering the full deployment lifecycle.
+A prototyping lab for testing Neo4j Enterprise Edition integrations on Azure. Use it to validate bearer token authentication, Databricks private connectivity, and Private Link configurations before designing a production deployment.
+
+> **Not for production use.** This lab is tuned for evaluation and rapid iteration. Default configurations skip hardening steps that production workloads require. Review the hardening guidance before promoting anything to production: [Bicep: Production Security Hardening](docs/bicep.md#production-security-hardening) or [Ansible: Production Security Hardening](docs/ansible.md#production-security-hardening).
+
+> **Disclaimer:** This is a sample provided as-is and is not officially supported by Neo4j.
+
+The lab deploys Neo4j Enterprise Edition on Azure VM Scale Sets. Two deployment paths are available: a Bicep path using Azure Bicep templates backed by a `bicep-deploy` Python CLI, and an Ansible path using Ansible playbooks backed by an `ansible-deploy` CLI. Both support single-node and multi-node cluster topologies and share the same command interface: setup, deploy, test, status, and cleanup.
 
 Three optional integration layers extend the base deployment:
 
-- **Private Databricks connectivity**: deploys an Azure Databricks workspace with VNet injection and connects it to the Neo4j cluster over two private network layers: Azure VNet peering for VNet-injected job clusters, and Azure Private Link + a Databricks Network Connectivity Configuration (NCC) for serverless compute. NSG rules are scoped so Bolt traffic never traverses the public internet on either path
-- **M2M bearer token authentication**: configures Neo4j's OIDC provider using either Keycloak (deployed to Azure Container Apps) or Microsoft Entra ID, enabling service-to-service connections without static credentials
-- **Databricks connectivity validation**: provisions a Databricks secrets scope and uploads a test notebook that validates TCP connectivity, Bolt authentication, and cluster topology in sequence
-
-> **Production hardening required:** The default configuration is tuned for evaluation and testing. Before deploying to production, review the hardening guidance for your deployment path: [Bicep: Production Security Hardening](docs/bicep.md#production-security-hardening) or [Ansible: Production Security Hardening](docs/ansible.md#production-security-hardening).
-
-> **Disclaimer:** This is a sample template provided as-is and is not officially supported by Neo4j.
+- **Private Databricks connectivity**: deploys an Azure Databricks workspace with VNet injection and connects it to the Neo4j cluster over two private network layers: Azure VNet peering for VNet-injected job clusters, and Azure Private Link with a Databricks Network Connectivity Configuration for serverless compute. NSG rules are scoped so Bolt traffic never traverses the public internet on either path.
+- **M2M bearer token authentication**: configures Neo4j's OIDC provider using either Keycloak or Microsoft Entra ID, enabling service-to-service connections without static credentials.
+- **Databricks connectivity validation**: provisions a Databricks secrets scope and uploads a test notebook that validates TCP connectivity, Bolt authentication, and cluster topology in sequence.
 
 ## Features
 
